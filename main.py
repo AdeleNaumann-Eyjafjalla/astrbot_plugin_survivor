@@ -133,7 +133,7 @@ class SurvivorPlugin(Star):
         self.name = "astrbot_plugin_survivor"
         self.desc = "末日生存文字游戏 - 挂机式QQ群文字游戏 v2.0"
         self.author = "AdeleNaumann"
-        self.version = "v2.3.0"
+        self.version = "v2.5.0"
 
         # 确保数据目录存在
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -682,7 +682,7 @@ class SurvivorPlugin(Star):
         if group:
             lines.append(f"")
             lines.append(f"🌍 世界第 {group.current_day} 天 | {group.current_season} | 危险等级 {'⭐' * group.danger_level}")
-            lines.append(f"⏳ 全自动搜集中 · 每游戏天自动入账 · 无需手动收菜")
+            lines.append(f"⏳ 全自动搜集中 · 每游戏天自动入账")
 
         return "\n".join(lines)
 
@@ -922,11 +922,11 @@ class SurvivorPlugin(Star):
     def _cmd_help(self) -> str:
         """帮助信息"""
         return (
-            f"🏚️ ===== 末日生存 v2.3 帮助 =====\n"
+            f"🏚️ ===== 末日生存 v2.5 帮助 =====\n"
             f"\n"
             f"🎮 基础操作：\n"
             f"  · 开始生存 [名字] [职业] - 创建角色\n"
-            f"  · 探索 - 外出搜索，触发随机事件\n"
+            f"  · 探索 - 外出搜索，触发随机事件（额外收益）\n"
             f"  · 选择 [数字] - 在事件中做出选择\n"
             f"  · 状态 - 查看生存状态\n"
             f"  · 背包 - 查看背包物品\n"
@@ -936,7 +936,7 @@ class SurvivorPlugin(Star):
             f"\n"
             f"👤 职业系统：\n"
             f"  · 职业列表 - 查看可选职业\n"
-            f"  · 6种职业各有独特加成（也影响自动搜集收益）\n"
+            f"  · 6种职业各有独特加成（也影响每日自动搜集收益）\n"
             f"\n"
             f"🏗️ 建造系统：\n"
             f"  · 建造列表 - 查看可建造建筑\n"
@@ -971,12 +971,12 @@ class SurvivorPlugin(Star):
             f"  · 重生 - 死亡后重新开始\n"
             f"\n"
             f"⏱️ 机制说明：\n"
-            f"  · 创建角色后全自动搜集，每游戏天自动入账\n"
+            f"  · 全自动搜集：创建角色后每游戏天自动入账，无需任何操作\n"
+            f"  · 探索是额外收益方式，可主动触发随机事件\n"
             f"  · 每{ACTION_COOLDOWN}秒可执行一次「探索」主动行动\n"
             f"  · 每1小时结算一个游戏天\n"
             f"  · 建筑每日自动产出资源\n"
-            f"  · 天气随机变化，影响探索体验\n"
-            f"  · 完全挂机即可，无需任何收菜操作！"
+            f"  · 天气随机变化，影响探索体验"
         )
 
     # ================================================================

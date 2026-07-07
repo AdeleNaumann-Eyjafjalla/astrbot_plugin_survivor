@@ -266,8 +266,8 @@ class PlayerState:
         "deaths": 0,
     })
 
-    # === 全自动挂机 ===
-    idle_mode: bool = True   # 是否处于挂机状态（默认开启，全自动搜集）
+    # === 全自动搜集 ===
+    idle_mode: bool = True   # 始终开启，每游戏天自动入账
 
     def is_alive(self) -> bool:
         return self.status != "dead"

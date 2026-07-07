@@ -648,7 +648,7 @@ class SurvivorEngine:
                 heal = hospital_level * 10
                 player.health = min(player.max_health, player.health + heal)
 
-            # 5. 全自动挂机——所有存活玩家自动搜集资源，直接入账
+            # 5. 全自动搜集——直接入账
             self._auto_gather(player)
             player.days_survived += 1
 
@@ -839,25 +839,17 @@ class SurvivorEngine:
             player.add_resource("ammo", ammo_gain)
 
     # ================================================================
-    # 全自动挂机搜集（每游戏天自动入账，无需玩家指令）
+    # 全自动搜集（每游戏天直接入账）
     # ================================================================
 
     def _auto_gather(self, player: PlayerState):
-        """
-        每游戏天自动搜集资源，直接入账到玩家背包。
-        所有存活玩家自动获得，无需手动收菜。
-        """
-        # === 基础收益（每游戏天） ===
+        """每游戏天自动搜集资源，直接入账。所有存活玩家自动获得。"""
         base = {"food": 4, "water": 3, "wood": 2, "stone": 1}
 
-        # 等级加成：每 5 级 +20%
         level_bonus = 1.0 + (player.level // 5) * 0.2
-
-        # 技能加成：scavenging 每级 +8%
         scav_level = player.skills.get("scavenging", 0)
         skill_bonus = 1.0 + scav_level * 0.08
 
-        # 职业加成
         class_bonus = 1.0
         class_resources = {}
         if player.player_class == "scavenger":
@@ -875,22 +867,18 @@ class SurvivorEngine:
                 gain = int(gain * class_resources[res])
             player.add_resource(res, max(1, gain))
 
-        # 概率额外材料
         if random.random() < min(0.3 + player.level * 0.02, 0.7):
             bonus_items = ["scrap_metal", "nails", "rope", "electronics", "cloth", "herb", "wood_plank"]
             player.add_item(random.choice(bonus_items), 1)
 
-        # 概率稀有物品
         if random.random() < 0.03:
             rare_items = ["bandage", "matchbox", "canned_food", "battery"]
             player.add_item(random.choice(rare_items), 1)
 
-        # 概率经验
         if random.random() < 0.15:
             player.exp += random.randint(5, 15 + player.level * 2)
             self._check_level_up(player)
 
-        # 自动治疗
         if player.health < player.max_health:
             heal = 1 + (player.level // 10)
             if player.player_class == "doctor":
