@@ -66,7 +66,7 @@ except ImportError:
                 return func
             return decorator
 
-from models import PlayerState, GroupGameState, ItemCategory
+from models import PlayerState, GroupGameState, ItemCategory, Item
 from engine import SurvivorEngine, ACTION_COOLDOWN
 from content import (
     init_all_content, ItemRegistry, BuildingRegistry,
@@ -173,8 +173,10 @@ class SurvivorPlugin(Star):
         # 旧数据迁移：如果旧位置有存档而新位置没有，则复制过来
         self._migrate_old_save()
 
-        # 初始化游戏内容
+        # 初始化游戏内容（先走标准流程）
         init_all_content()
+        # 强制补齐缺失内容（防御旧版 content.py 被缓存导致新配方/RESOURCE丢失）
+        self._ensure_new_content()
 
         # 创建游戏引擎
         self.engine = SurvivorEngine()
@@ -986,6 +988,51 @@ class SurvivorPlugin(Star):
         if item:
             return item.name
         return SurvivorPlugin._FALLBACK_NAMES.get(item_id, item_id)
+
+    @staticmethod
+    def _ensure_new_content():
+        """强制补齐缺失内容：防御旧版 content.py 被 Python 运行时缓存导致新配方/RESOURCE 丢失。
+        所有注册操作都是幂等的（重复注册会覆盖），不会产生副作用。"""
+        _res_cat = getattr(ItemCategory, "RESOURCE", None) or ItemCategory.MATERIAL
+
+        # --- 补齐 RESOURCE 分类物品（旧版没有这 8 个 Item 注册） ---
+        _resource_specs = [
+            ("food", "食物", "基础食物资源，维持饱食度"),
+            ("water", "水", "基础水资源，维持口渴度"),
+            ("wood", "木材", "基础建材，建造和合成的必需品"),
+            ("stone", "石料", "基础石料，用于建造防御设施"),
+            ("iron", "铁", "金属资源，制作高级武器和防具"),
+            ("medicine", "药品", "医疗资源，制作药物和治疗伤病"),
+            ("ammo", "弹药", "弹药资源，远程武器的消耗品"),
+            ("fuel", "燃料", "燃料资源，驱动设备和熔炼金属"),
+        ]
+        for rid, rname, rdesc in _resource_specs:
+            if ItemRegistry.get(rid) is None:
+                ItemRegistry.register(Item(id=rid, name=rname, category=_res_cat, description=rdesc, rarity="common"))
+
+        # --- 补齐缺失配方（旧版只有 10 个，这里补上另外 10 个） ---
+        _missing_recipes = [
+            # (result_id, materials_dict, description, required_building, min_level, resource_costs_dict)
+            ("bottled_water", {"herb": 2, "plastic": 1}, "消耗水资源，用草药过滤、塑料瓶盛装，制作可饮用的瓶装水", None, 1, {"water": 5}),
+            ("canned_food", {"scrap_metal": 2, "herb": 2, "cloth": 1}, "消耗食物资源，用金属片封装保存", None, 1, {"food": 5}),
+            ("rusty_knife", {"scrap_metal": 3, "cloth": 1}, "打磨金属片，缠上布条做握柄，制作简易小刀", None, 1, None),
+            ("rope", {"cloth": 3}, "将布料撕成条，编织成绳索", None, 1, None),
+            ("military_vest", {"iron": 5, "leather": 5, "cloth": 3}, "用金属板和皮革制作军用防弹衣", "workshop", 3, None),
+            ("mre", {"canned_food": 2, "cloth": 1, "plastic": 1}, "封装压缩食物，制作军用口粮", "workshop", 2, None),
+            ("iron", {"scrap_metal": 5}, "熔炼废金属提取铁", "workshop", 1, {"fuel": 2}),
+            ("medicine", {"herb": 5}, "研磨草药制成基础药品", None, 1, None),
+            ("ammo", {"scrap_metal": 2, "gunpowder": 2}, "制作简易弹药", "workshop", 2, None),
+            ("fuel", {"wood": 5}, "加工木材制成燃料块", None, 1, None),
+        ]
+        for result_id, mats, desc, req_bld, min_lvl, res_costs in _missing_recipes:
+            if RecipeRegistry.get(result_id) is None:
+                RecipeRegistry.register(
+                    result_id, mats,
+                    description=desc,
+                    required_building=req_bld,
+                    min_level=min_lvl,
+                    resource_costs=res_costs,
+                )
 
     def _format_recipe_entry(self, item_id, recipe, item):
         """格式化单条配方条目"""
