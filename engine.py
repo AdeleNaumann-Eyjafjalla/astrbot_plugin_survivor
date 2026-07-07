@@ -555,10 +555,12 @@ class SurvivorEngine:
                     "message": f"⚠️ 资源不足！需要 {res_name}x{needed}，当前仅有 {current}。"
                 }
 
-        # 检查材料
+        # 检查材料（先查背包，再查基础资源）
         for mat_id, mat_amount in materials.items():
             needed = mat_amount * count
-            if not player.has_item(mat_id, needed):
+            inv_has = player.has_item(mat_id, needed)
+            res_has = player.resources.get(mat_id, 0) >= needed
+            if not inv_has and not res_has:
                 mat_def = ItemRegistry.get(mat_id)
                 mat_name = mat_def.name if mat_def else mat_id
                 return {
@@ -566,17 +568,27 @@ class SurvivorEngine:
                     "message": f"⚠️ 材料不足！需要 {needed} 个{mat_name}。"
                 }
 
-        # 消耗资源
+        # 消耗资源（resource_costs 从玩家资源池扣除）
         for res_key, res_amount in resource_costs.items():
             player.resources[res_key] -= res_amount * count
 
-        # 消耗材料
+        # 消耗材料（优先扣背包物品，不够再从资源池扣）
         for mat_id, mat_amount in materials.items():
             needed = mat_amount * count
-            player.remove_item(mat_id, needed)
+            inv_have = player.inventory.get(mat_id, 0)
+            if inv_have >= needed:
+                player.remove_item(mat_id, needed)
+            else:
+                # 先把背包里的扣完，剩下的从资源池扣
+                if inv_have > 0:
+                    player.remove_item(mat_id, inv_have)
+                player.resources[mat_id] = player.resources.get(mat_id, 0) - (needed - inv_have)
 
-        # 获得成品
-        player.add_item(item_id, count)
+        # 获得成品：资源类产出写入资源池，普通物品写入背包
+        if item_def and item_def.category == ItemCategory.RESOURCE:
+            player.resources[item_id] = player.resources.get(item_id, 0) + count
+        else:
+            player.add_item(item_id, count)
         player.stats["items_crafted"] += count
 
         item_name = item_def.name if item_def else item_id

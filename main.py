@@ -975,7 +975,7 @@ class SurvivorPlugin(Star):
             item_name = item.name if item else item_id
 
             mat_str = " + ".join(
-                f"{ItemRegistry.get(mid).name if ItemRegistry.get(mid) else mid} x{amt}"
+                f"{ItemRegistry.get(mid).name if ItemRegistry.get(mid) else res_names.get(mid, mid)} x{amt}"
                 for mid, amt in recipe["materials"].items()
             )
 

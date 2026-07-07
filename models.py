@@ -35,6 +35,7 @@ class ItemCategory(Enum):
     ARMOR = "armor"         # 防具
     CONSUMABLE = "consumable"  # 消耗品
     MATERIAL = "material"   # 材料
+    RESOURCE = "resource"   # 基础资源（产出写入 resources 而非 inventory）
     SPECIAL = "special"     # 特殊物品
 
 

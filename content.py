@@ -302,6 +302,22 @@ def init_default_items():
             description=f"基础材料：{mat_name}", rarity="common"
         ))
 
+    # === 基础资源（可作为合成产物） ===
+    for res_id, res_name, res_desc in [
+        ("food", "食物", "基础食物资源，维持饱食度"),
+        ("water", "水", "基础水资源，维持口渴度"),
+        ("wood", "木材", "基础建材，建造和合成的必需品"),
+        ("stone", "石料", "基础石料，用于建造防御设施"),
+        ("iron", "铁", "金属资源，制作高级武器和防具"),
+        ("medicine", "药品", "医疗资源，制作药物和治疗伤病"),
+        ("ammo", "弹药", "弹药资源，远程武器的消耗品"),
+        ("fuel", "燃料", "燃料资源，驱动设备和熔炼金属"),
+    ]:
+        ItemRegistry.register(Item(
+            id=res_id, name=res_name, category=ItemCategory.RESOURCE,
+            description=res_desc, rarity="common"
+        ))
+
     # === 特殊物品 ===
     ItemRegistry.register(Item(
         id="survivor_journal", name="幸存者日记", category=ItemCategory.SPECIAL,
@@ -1772,6 +1788,23 @@ def init_default_recipes():
     RecipeRegistry.register(
         "mre", {"canned_food": 2, "cloth": 1, "plastic": 1},
         description="封装压缩食物，制作军用口粮", required_building="workshop", min_level=2
+    )
+    # 基础资源合成
+    RecipeRegistry.register(
+        "iron", {"scrap_metal": 5}, resource_costs={"fuel": 2},
+        description="熔炼废金属提取铁", required_building="workshop", min_level=1
+    )
+    RecipeRegistry.register(
+        "medicine", {"herb": 5},
+        description="研磨草药制成基础药品"
+    )
+    RecipeRegistry.register(
+        "ammo", {"scrap_metal": 2, "gunpowder": 2},
+        description="制作简易弹药", required_building="workshop", min_level=2
+    )
+    RecipeRegistry.register(
+        "fuel", {"wood": 5},
+        description="加工木材制成燃料块"
     )
 
 
