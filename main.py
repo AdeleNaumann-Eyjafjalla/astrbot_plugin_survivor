@@ -22,7 +22,17 @@ _plugin_dir = os.path.dirname(os.path.abspath(__file__))
 if _plugin_dir not in sys.path:
     sys.path.insert(0, _plugin_dir)
 
-# AstrBot 依赖
+# AstrBot Star 基类
+try:
+    from astrbot.api.star import Context, Star
+except ImportError:
+    # 开发环境 mock
+    class Star:
+        def __init__(self, context=None):
+            pass
+    Context = None
+
+# AstrBot 消息依赖
 try:
     from nakuru.entities.components import Plain, Image, At
     from nakuru import GroupMessage, FriendMessage
@@ -47,7 +57,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 SAVE_FILE = os.path.join(DATA_DIR, "save_data.json")
 
 
-class SurvivorPlugin:
+class SurvivorPlugin(Star):
     """
     末日生存游戏插件
 
@@ -72,8 +82,11 @@ class SurvivorPlugin:
     - 帮助 / 生存帮助                查看帮助
     """
 
-    def __init__(self):
+    def __init__(self, context=None):
         """初始化插件"""
+        super().__init__(context)
+        self.context = context
+
         # 确保数据目录存在
         os.makedirs(DATA_DIR, exist_ok=True)
 
