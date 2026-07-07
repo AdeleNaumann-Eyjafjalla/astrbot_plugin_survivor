@@ -1012,19 +1012,19 @@ class SurvivorPlugin(Star):
 
         # --- 补齐缺失配方（旧版只有 10 个，这里补上另外 10 个） ---
         _missing_recipes = [
-            # (result_id, materials_dict, description, required_building, min_level, resource_costs_dict)
-            ("bottled_water", {"herb": 2, "plastic": 1}, "消耗水资源，用草药过滤、塑料瓶盛装，制作可饮用的瓶装水", None, 1, {"water": 5}),
-            ("canned_food", {"scrap_metal": 2, "herb": 2, "cloth": 1}, "消耗食物资源，用金属片封装保存", None, 1, {"food": 5}),
-            ("rusty_knife", {"scrap_metal": 3, "cloth": 1}, "打磨金属片，缠上布条做握柄，制作简易小刀", None, 1, None),
-            ("rope", {"cloth": 3}, "将布料撕成条，编织成绳索", None, 1, None),
-            ("military_vest", {"iron": 5, "leather": 5, "cloth": 3}, "用金属板和皮革制作军用防弹衣", "workshop", 3, None),
-            ("mre", {"canned_food": 2, "cloth": 1, "plastic": 1}, "封装压缩食物，制作军用口粮", "workshop", 2, None),
-            ("iron", {"scrap_metal": 5}, "熔炼废金属提取铁", "workshop", 1, {"fuel": 2}),
-            ("medicine", {"herb": 5}, "研磨草药制成基础药品", None, 1, None),
-            ("ammo", {"scrap_metal": 2, "gunpowder": 2}, "制作简易弹药", "workshop", 2, None),
-            ("fuel", {"wood": 5}, "加工木材制成燃料块", None, 1, None),
+            # (result_id, materials_dict, description, required_building, min_level)
+            ("bottled_water", {"herb": 2, "plastic": 1, "water": 3}, "用塑料瓶盛装、草药净化，制作可饮用的瓶装水", None, 1),
+            ("canned_food", {"scrap_metal": 2, "herb": 2, "cloth": 1, "food": 3}, "消耗食物资源，用金属片封装保存", None, 1),
+            ("rusty_knife", {"scrap_metal": 3, "cloth": 1}, "打磨金属片，缠上布条做握柄，制作简易小刀", None, 1),
+            ("rope", {"cloth": 3}, "将布料撕成条，编织成绳索", None, 1),
+            ("military_vest", {"iron": 5, "leather": 5, "cloth": 3}, "用金属板和皮革制作军用防弹衣", "workshop", 3),
+            ("mre", {"canned_food": 2, "cloth": 1, "plastic": 1}, "封装压缩食物，制作军用口粮", "workshop", 2),
+            ("iron", {"scrap_metal": 5, "fuel": 2}, "熔炼废金属，消耗燃料提取铁", "workshop", 1),
+            ("medicine", {"herb": 5, "water": 2}, "研磨草药加水熬制，制成基础药品", None, 1),
+            ("ammo", {"scrap_metal": 2, "gunpowder": 2}, "制作简易弹药", "workshop", 2),
+            ("fuel", {"wood": 5}, "加工木材制成燃料块", None, 1),
         ]
-        for result_id, mats, desc, req_bld, min_lvl, _res_costs in _missing_recipes:
+        for result_id, mats, desc, req_bld, min_lvl in _missing_recipes:
             if RecipeRegistry.get(result_id) is None:
                 RecipeRegistry.register(
                     result_id, mats,

@@ -1764,13 +1764,11 @@ def init_default_recipes():
     )
     # 基础生存物品
     RecipeRegistry.register(
-        "bottled_water", {"herb": 2, "plastic": 1},
-        resource_costs={"water": 5},
-        description="消耗水资源，用草药过滤、塑料瓶盛装，制作可饮用的瓶装水"
+        "bottled_water", {"herb": 2, "plastic": 1, "water": 3},
+        description="用塑料瓶盛装、草药净化，制作可饮用的瓶装水"
     )
     RecipeRegistry.register(
-        "canned_food", {"scrap_metal": 2, "herb": 2, "cloth": 1},
-        resource_costs={"food": 5},
+        "canned_food", {"scrap_metal": 2, "herb": 2, "cloth": 1, "food": 3},
         description="消耗食物资源，用金属片封装保存"
     )
     # 基础工具
@@ -1792,12 +1790,12 @@ def init_default_recipes():
     )
     # 基础资源合成
     RecipeRegistry.register(
-        "iron", {"scrap_metal": 5}, resource_costs={"fuel": 2},
-        description="熔炼废金属提取铁", required_building="workshop", min_level=1
+        "iron", {"scrap_metal": 5, "fuel": 2},
+        description="熔炼废金属，消耗燃料提取铁", required_building="workshop", min_level=1
     )
     RecipeRegistry.register(
-        "medicine", {"herb": 5},
-        description="研磨草药制成基础药品"
+        "medicine", {"herb": 5, "water": 2},
+        description="研磨草药加水熬制，制成基础药品"
     )
     RecipeRegistry.register(
         "ammo", {"scrap_metal": 2, "gunpowder": 2},
