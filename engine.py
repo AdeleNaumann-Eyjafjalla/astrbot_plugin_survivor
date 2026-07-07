@@ -1,0 +1,1160 @@
+"""
+末日生存游戏 - 核心游戏引擎
+
+负责处理游戏逻辑：玩家行动、事件触发、战斗结算、建筑产出等。
+所有逻辑通过 Engine 类集中管理，便于测试和扩展。
+"""
+
+import random
+import time
+from typing import Dict, List, Optional, Tuple, Any
+
+from models import (
+    PlayerState, GroupGameState, Item, Building, GameEvent, Skill,
+    ItemCategory, EventType, ResourceType, PlayerStatus
+)
+from content import (
+    ItemRegistry, BuildingRegistry, EventRegistry,
+    SkillRegistry, RecipeRegistry, AchievementRegistry, ClassRegistry
+)
+
+
+# 行动冷却时间（秒）
+ACTION_COOLDOWN = 30
+# 每日结算间隔（秒），实际使用时建议设长一些，这里为了测试设短一点
+DAY_DURATION = 3600  # 1小时 = 1游戏天
+
+
+class SurvivorEngine:
+    """
+    末日生存游戏引擎
+
+    核心职责：
+    1. 管理玩家数据和群组游戏状态
+    2. 处理玩家行动（探索、建造、合成、使用物品等）
+    3. 每日结算（资源消耗、建筑产出、随机事件）
+    4. 战斗系统
+    """
+
+    def __init__(self):
+        """初始化引擎"""
+        # 玩家数据存储: {group_id: {user_id: PlayerState}}
+        self._players: Dict[str, Dict[str, PlayerState]] = {}
+        # 群组状态存储: {group_id: GroupGameState}
+        self._groups: Dict[str, GroupGameState] = {}
+        # 玩家当前待处理的事件: {group_id: {user_id: GameEvent}}
+        self._pending_events: Dict[str, Dict[str, GameEvent]] = {}
+        # 玩家事件选择等待: {group_id: {user_id: {"event": GameEvent, "choices": [...]}}}
+        self._pending_choices: Dict[str, Dict[str, Dict]] = {}
+        # 等待起名的玩家: {group_id: {user_id: True}}
+        self._pending_names: Dict[str, Dict[str, bool]] = {}
+
+    # ================================================================
+    # 内部工具方法
+    # ================================================================
+
+    def _get_pending_event(self, user_id: str, group_id: str) -> Optional[GameEvent]:
+        return self._pending_events.get(group_id, {}).get(user_id)
+
+    def _set_pending_event(self, user_id: str, group_id: str, event: GameEvent):
+        if group_id not in self._pending_events:
+            self._pending_events[group_id] = {}
+        self._pending_events[group_id][user_id] = event
+
+    def _del_pending_event(self, user_id: str, group_id: str):
+        if group_id in self._pending_events:
+            self._pending_events[group_id].pop(user_id, None)
+
+    def _get_pending_choice(self, user_id: str, group_id: str) -> Optional[Dict]:
+        return self._pending_choices.get(group_id, {}).get(user_id)
+
+    def _set_pending_choice(self, user_id: str, group_id: str, data: Dict):
+        if group_id not in self._pending_choices:
+            self._pending_choices[group_id] = {}
+        self._pending_choices[group_id][user_id] = data
+
+    def _pop_pending_choice(self, user_id: str, group_id: str) -> Optional[Dict]:
+        if group_id in self._pending_choices:
+            return self._pending_choices[group_id].pop(user_id, None)
+        return None
+
+    def has_pending_choice(self, user_id: str, group_id: str) -> bool:
+        """检查是否有待处理的选择"""
+        return group_id in self._pending_choices and user_id in self._pending_choices[group_id]
+
+    def has_pending_name(self, user_id: str, group_id: str) -> bool:
+        """检查是否在等待起名"""
+        return group_id in self._pending_names and user_id in self._pending_names[group_id]
+
+    def set_pending_name(self, user_id: str, group_id: str):
+        """标记玩家等待起名"""
+        if group_id not in self._pending_names:
+            self._pending_names[group_id] = {}
+        self._pending_names[group_id][user_id] = True
+
+    def clear_pending_name(self, user_id: str, group_id: str):
+        """清除等待起名状态"""
+        if group_id in self._pending_names:
+            self._pending_names[group_id].pop(user_id, None)
+
+    # ================================================================
+    # 玩家管理
+    # ================================================================
+
+    def get_player(self, user_id: str, group_id: str) -> Optional[PlayerState]:
+        """获取玩家状态"""
+        return self._players.get(group_id, {}).get(user_id)
+
+    def create_player(self, user_id: str, group_id: str, nickname: str = "",
+                      player_class: str = None) -> PlayerState:
+        """创建新玩家"""
+        if group_id not in self._players:
+            self._players[group_id] = {}
+        if group_id not in self._groups:
+            self._groups[group_id] = GroupGameState(group_id=group_id)
+
+        player = PlayerState(
+            user_id=user_id,
+            group_id=group_id,
+            nickname=nickname,
+            created_at=time.time(),
+            last_action_time=0.0,
+            player_class=player_class,
+        )
+
+        # 应用职业加成
+        if player_class:
+            class_data = ClassRegistry.get(player_class)
+            if class_data:
+                bonuses = class_data.get("bonuses", {})
+                if "attack_bonus" in bonuses:
+                    player.attack += bonuses["attack_bonus"]
+                # 初始物品
+                for item_id, count in class_data.get("starting_items", {}).items():
+                    player.add_item(item_id, count)
+                # 初始资源加成
+                for res, amount in class_data.get("starting_resources", {}).items():
+                    player.resources[res] = player.resources.get(res, 0) + amount
+                # 商人物资加成
+                if "start_boost" in bonuses:
+                    for res in ["food", "water", "wood", "stone"]:
+                        if res in player.resources:
+                            player.resources[res] = int(player.resources[res] * (1 + bonuses["start_boost"]))
+
+                # 医生免疫疾病
+                if bonuses.get("immune_sick"):
+                    player.status_effects["immune_sick"] = 1
+
+        # PvP 初始保护（2小时 = 7200秒），所有新玩家都有
+        player.pvp_shield_until = time.time() + 7200
+
+        self._players[group_id][user_id] = player
+        return player
+
+    def get_group(self, group_id: str) -> Optional[GroupGameState]:
+        """获取群组状态"""
+        return self._groups.get(group_id)
+
+    def ensure_group(self, group_id: str) -> GroupGameState:
+        """确保群组存在"""
+        if group_id not in self._groups:
+            self._groups[group_id] = GroupGameState(group_id=group_id)
+        return self._groups[group_id]
+
+    # ================================================================
+    # 行动系统
+    # ================================================================
+
+    def can_act(self, player: PlayerState) -> Tuple[bool, str]:
+        """检查玩家是否可以行动"""
+        if not player.is_alive():
+            return False, "💀 你已经死亡，无法行动。请使用「重生」指令重新开始。"
+
+        elapsed = time.time() - player.last_action_time
+        if elapsed < ACTION_COOLDOWN:
+            remaining = int(ACTION_COOLDOWN - elapsed)
+            return False, f"⏳ 行动冷却中，请等待 {remaining} 秒后再试。"
+
+        return True, ""
+
+    def do_action(self, player: PlayerState, group: GroupGameState) -> Dict[str, Any]:
+        """
+        执行一次行动（探索）
+
+        随机触发一个事件，返回事件信息和选项。
+        """
+        # 根据当前状态选择事件类型权重
+        event = self._pick_event(player, group)
+        if not event:
+            # 空事件也要消耗冷却
+            player.last_action_time = time.time()
+            player.total_actions += 1
+            return {
+                "type": "empty",
+                "message": "🌫️ 你在荒野中搜索了一圈，什么也没有发现...\n⏳ 冷却 {} 秒后可再次探索。".format(ACTION_COOLDOWN)
+            }
+
+        # 存储待处理事件
+        self._set_pending_event(player.user_id, player.group_id, event)
+
+        result = {
+            "type": "event",
+            "event_id": event.id,
+            "event_name": event.name,
+            "event_type": event.event_type.value,
+            "description": event.description,
+            "choices": [],
+            "auto": False,
+        }
+
+        # 如果有自动结算结果
+        if event.auto_result:
+            auto_msg = self._apply_auto_result(player, event.auto_result)
+            result["auto"] = True
+            result["auto_message"] = auto_msg
+            # 清除待处理事件
+            self._del_pending_event(player.user_id, player.group_id)
+        else:
+            # 构建选项列表
+            for i, choice in enumerate(event.choices):
+                result["choices"].append({
+                    "index": i + 1,
+                    "text": choice["text"],
+                })
+            # 存储选择等待
+            self._set_pending_choice(player.user_id, player.group_id, {
+                "event": event,
+                "choices": event.choices,
+            })
+
+        # 更新玩家状态
+        player.last_action_time = time.time()
+        player.total_actions += 1
+        player.stats["events_triggered"] += 1
+        player.days_survived = group.current_day
+
+        return result
+
+    def handle_choice(self, player: PlayerState, choice_index: int) -> Dict[str, Any]:
+        """处理玩家的事件选择"""
+        user_id = player.user_id
+        group_id = player.group_id
+
+        pending = self._pop_pending_choice(user_id, group_id)
+        if pending is None:
+            return {"type": "error", "message": "⚠️ 你当前没有待处理的事件。"}
+
+        event = pending["event"]
+        choices = pending["choices"]
+
+        if choice_index < 1 or choice_index > len(choices):
+            # 恢复待处理状态
+            self._set_pending_choice(user_id, group_id, pending)
+            return {"type": "error", "message": f"⚠️ 请输入有效选项 (1-{len(choices)})。"}
+
+        choice = choices[choice_index - 1]
+        result = choice["result"]
+
+        messages = []
+        resources_gained = {}
+        items_gained = {}
+        damage_taken = 0
+        exp_gained = 0
+
+        # 处理战斗
+        if "combat" in result:
+            combat_result = self._resolve_combat(player, result["combat"])
+            if combat_result["win"]:
+                messages.append(result.get("description_win", combat_result["message"]))
+                # 战利品
+                if "rewards" in result:
+                    rewards = result["rewards"]
+                    if "exp" in rewards:
+                        e = self._roll_range(rewards["exp"])
+                        player.exp += e
+                        exp_gained += e
+                # 战斗胜利后的物品奖励（来自事件定义的 rewards.items）
+                if "rewards" in result and "items" in result["rewards"]:
+                    for item_id, (min_n, max_n) in result["rewards"]["items"].items():
+                        count = random.randint(min_n, max_n)
+                        if count > 0:
+                            player.add_item(item_id, count)
+                            items_gained[item_id] = items_gained.get(item_id, 0) + count
+                # 战斗胜利后的资源奖励（来自事件定义的 rewards.resources）
+                if "rewards" in result and "resources" in result["rewards"]:
+                    for res, (min_n, max_n) in result["rewards"]["resources"].items():
+                        amount = random.randint(min_n, max_n)
+                        if amount > 0:
+                            player.add_resource(res, amount)
+                            resources_gained[res] = resources_gained.get(res, 0) + amount
+            else:
+                messages.append(result.get("description_lose", combat_result["message"]))
+                # combat_result 中已经扣过血了，不再重复扣 lose_damage
+                damage_taken += combat_result.get("damage", 0)
+                if "lose_resources" in result:
+                    for res, ratio in result["lose_resources"].items():
+                        lost = int(player.resources.get(res, 0) * ratio)
+                        player.resources[res] = max(0, player.resources.get(res, 0) - lost)
+
+        # 处理逃跑/潜行
+        if "escape_chance" in result:
+            if random.random() < result["escape_chance"]:
+                messages.append(result.get("description_escape", "你成功逃脱了。"))
+            else:
+                damage = self._roll_range(result.get("fail_damage", (5, 15)))
+                player.health = max(0, player.health - damage)
+                damage_taken += damage
+                messages.append(result.get("description_fail", "逃跑失败！"))
+
+        if "stealth_chance" in result:
+            if random.random() < result["stealth_chance"]:
+                messages.append(result.get("description_stealth", "你悄悄绕了过去。"))
+            else:
+                damage = self._roll_range(result.get("fail_damage", (5, 15)))
+                player.health = max(0, player.health - damage)
+                damage_taken += damage
+                messages.append(result.get("description_fail", "被发现了！"))
+
+        # 处理资源获得
+        if "resources" in result:
+            for res, (min_n, max_n) in result["resources"].items():
+                amount = random.randint(min_n, max_n)
+                if amount > 0:
+                    # 应用搜索技能加成
+                    scav_level = player.skills.get("scavenging", 0)
+                    bonus = scav_level * 0.1
+                    amount = int(amount * (1 + bonus))
+                    player.add_resource(res, amount)
+                    resources_gained[res] = resources_gained.get(res, 0) + amount
+
+        # 处理物品获得
+        if "items" in result:
+            for item_id, (min_n, max_n) in result["items"].items():
+                count = random.randint(min_n, max_n)
+                if count > 0:
+                    player.add_item(item_id, count)
+                    items_gained[item_id] = items_gained.get(item_id, 0) + count
+
+        # 处理经验获得
+        if "exp" in result:
+            e = self._roll_range(result["exp"])
+            player.exp += e
+            exp_gained += e
+
+        # 处理治疗
+        if "heal" in result:
+            heal = result["heal"]
+            med_level = player.skills.get("medicine", 0)
+            heal = int(heal * (1 + med_level * 0.1))
+            player.health = min(player.max_health, player.health + heal)
+
+        # 处理生命伤害
+        if "health_damage" in result:
+            dmg = self._roll_range(result["health_damage"])
+            player.health = max(0, player.health - dmg)
+            damage_taken += dmg
+
+        # 处理资源损失
+        if "lose_resources" in result:
+            for res, ratio in result["lose_resources"].items():
+                lost = int(player.resources.get(res, 0) * ratio)
+                player.resources[res] = max(0, player.resources.get(res, 0) - lost)
+
+        # 添加描述消息
+        if "description" in result:
+            messages.append(result["description"])
+        if result.get("trade", False):
+            messages.append("你可以使用「交易」指令与幸存者交换物资。")
+        if result.get("trade_special", False):
+            messages.append("商人展示了特殊商品，使用「商人」指令查看。")
+
+        # 检查死亡
+        if player.health <= 0:
+            player.status = "dead"
+            player.stats["deaths"] += 1
+            # 清理该玩家的所有待处理状态
+            self._del_pending_event(user_id, group_id)
+            self.clear_pending_name(user_id, group_id)
+
+        # 更新事件链进度
+        if event.chain_id and event.chain_order > 0:
+            player.chain_progress[event.chain_id] = max(
+                player.chain_progress.get(event.chain_id, 0),
+                event.chain_order
+            )
+
+        # 检查升级
+        level_up = self._check_level_up(player)
+
+        # 检查成就
+        group = self.ensure_group(group_id)
+        new_achievements = self._check_achievements(player, group)
+
+        # 清除事件选择状态（如果还没死亡的话也要清理）
+        if player.is_alive():
+            self._del_pending_event(user_id, group_id)
+
+        return {
+            "type": "result",
+            "messages": messages,
+            "resources_gained": resources_gained,
+            "items_gained": items_gained,
+            "damage_taken": damage_taken,
+            "exp_gained": exp_gained,
+            "level_up": level_up,
+            "new_achievements": new_achievements,
+        }
+
+    # ================================================================
+    # 建造系统
+    # ================================================================
+
+    def build_structure(self, player: PlayerState, building_id: str) -> Dict[str, Any]:
+        """建造或升级建筑"""
+        building_def = BuildingRegistry.get(building_id)
+        if not building_def:
+            return {"type": "error", "message": "⚠️ 未知的建筑类型。"}
+
+        # 当前等级
+        current_level = player.buildings.get(building_id, 0)
+        if current_level >= building_def.max_level:
+            return {"type": "error", "message": f"🏗️ {building_def.name}已达到最高等级！"}
+
+        # 计算消耗
+        temp_building = Building(
+            id=building_def.id, name=building_def.name,
+            building_type=building_def.building_type,
+            level=current_level + 1, max_level=building_def.max_level,
+            build_cost=building_def.build_cost,
+            upgrade_cost_multiplier=building_def.upgrade_cost_multiplier,
+        )
+
+        # 首次建造用 build_cost，升级用 get_upgrade_cost
+        if current_level == 0:
+            cost = building_def.build_cost
+        else:
+            cost = temp_building.get_upgrade_cost()
+
+        # 检查资源
+        for res, amount in cost.items():
+            if player.get_resource(res) < amount:
+                return {
+                    "type": "error",
+                    "message": f"⚠️ 资源不足！需要 {amount} {res}，你只有 {player.get_resource(res)}。"
+                }
+
+        # 消耗资源
+        for res, amount in cost.items():
+            player.consume_resource(res, amount)
+
+        # 升级
+        new_level = current_level + 1
+        player.buildings[building_id] = new_level
+
+        return {
+            "type": "success",
+            "message": f"🏗️ {building_def.name} 已{'建造' if current_level == 0 else '升级到'} Lv.{new_level}！",
+            "building_name": building_def.name,
+            "new_level": new_level,
+            "cost": cost,
+        }
+
+    # ================================================================
+    # 合成系统
+    # ================================================================
+
+    def craft_item(self, player: PlayerState, item_id: str, count: int = 1) -> Dict[str, Any]:
+        """合成物品"""
+        recipe = RecipeRegistry.get(item_id)
+        if not recipe:
+            return {"type": "error", "message": "⚠️ 该物品无法合成。"}
+
+        item_def = ItemRegistry.get(item_id)
+
+        # 检查建筑需求
+        if recipe.get("required_building"):
+            bld_id = recipe["required_building"]
+            bld_level = player.buildings.get(bld_id, 0)
+            if bld_level < recipe.get("min_level", 1):
+                bld_def = BuildingRegistry.get(bld_id)
+                return {
+                    "type": "error",
+                    "message": f"⚠️ 需要 {bld_def.name} Lv.{recipe['min_level']} 才能合成此物品。"
+                }
+
+        # 检查材料
+        materials = recipe["materials"]
+        for mat_id, mat_amount in materials.items():
+            needed = mat_amount * count
+            if not player.has_item(mat_id, needed):
+                mat_def = ItemRegistry.get(mat_id)
+                mat_name = mat_def.name if mat_def else mat_id
+                return {
+                    "type": "error",
+                    "message": f"⚠️ 材料不足！需要 {needed} 个{mat_name}。"
+                }
+
+        # 消耗材料
+        for mat_id, mat_amount in materials.items():
+            needed = mat_amount * count
+            player.remove_item(mat_id, needed)
+
+        # 获得成品
+        player.add_item(item_id, count)
+        player.stats["items_crafted"] += count
+
+        item_name = item_def.name if item_def else item_id
+        return {
+            "type": "success",
+            "message": f"🔨 成功制作了 {count} 个 {item_name}！",
+            "item_name": item_name,
+            "count": count,
+        }
+
+    # ================================================================
+    # 物品使用
+    # ================================================================
+
+    def use_item(self, player: PlayerState, item_id: str) -> Dict[str, Any]:
+        """使用物品"""
+        if not player.has_item(item_id):
+            return {"type": "error", "message": "⚠️ 你没有这个物品。"}
+
+        item_def = ItemRegistry.get(item_id)
+        if not item_def:
+            return {"type": "error", "message": "⚠️ 未知物品。"}
+
+        messages = []
+
+        # 消耗品
+        if item_def.category == ItemCategory.CONSUMABLE:
+            player.remove_item(item_id)
+
+            if item_def.heal_amount > 0:
+                med_level = player.skills.get("medicine", 0)
+                heal = int(item_def.heal_amount * (1 + med_level * 0.1))
+                actual_heal = min(player.max_health - player.health, heal)
+                player.health = min(player.max_health, player.health + heal)
+                messages.append(f"💚 恢复了 {actual_heal} 点生命值。")
+
+            if item_def.hunger_restore > 0:
+                player.hunger = min(100, player.hunger + item_def.hunger_restore)
+                messages.append(f"🍖 恢复了 {item_def.hunger_restore} 点饱食度。")
+
+            if item_def.thirst_restore > 0:
+                player.thirst = min(100, player.thirst + item_def.thirst_restore)
+                messages.append(f"💧 恢复了 {item_def.thirst_restore} 点口渴度。")
+
+            return {
+                "type": "success",
+                "message": f"使用了 {item_def.name}。\n" + "\n".join(messages),
+            }
+
+        # 装备武器
+        elif item_def.category == ItemCategory.WEAPON:
+            # 卸下旧武器
+            if player.equipped_weapon:
+                old = ItemRegistry.get(player.equipped_weapon)
+                if old:
+                    player.attack = max(0, player.attack - old.attack_bonus)
+                    player.add_item(player.equipped_weapon)
+
+            player.remove_item(item_id)
+            player.equipped_weapon = item_id
+            player.attack += item_def.attack_bonus
+            return {
+                "type": "success",
+                "message": f"⚔️ 装备了 {item_def.name}，攻击力 +{item_def.attack_bonus}！"
+            }
+
+        # 装备防具
+        elif item_def.category == ItemCategory.ARMOR:
+            if player.equipped_armor:
+                old = ItemRegistry.get(player.equipped_armor)
+                if old:
+                    player.defense = max(0, player.defense - old.defense_bonus)
+                    player.add_item(player.equipped_armor)
+
+            player.remove_item(item_id)
+            player.equipped_armor = item_id
+            player.defense += item_def.defense_bonus
+            return {
+                "type": "success",
+                "message": f"🛡️ 装备了 {item_def.name}，防御力 +{item_def.defense_bonus}！"
+            }
+
+        # 特殊物品
+        elif item_def.category == ItemCategory.SPECIAL:
+            player.remove_item(item_id)
+            if item_id == "survivor_journal":
+                exp = random.randint(50, 150)
+                player.exp += exp
+                messages.append(f"📖 你阅读了幸存者日记，获得了 {exp} 点经验。")
+            elif item_id == "radio":
+                messages.append("📻 无线电中传来断断续续的声音...似乎有其他幸存者在附近。")
+                player.add_resource("food", random.randint(3, 10))
+
+            return {
+                "type": "success",
+                "message": f"使用了 {item_def.name}。\n" + "\n".join(messages),
+            }
+
+        return {"type": "error", "message": "⚠️ 该物品无法直接使用。"}
+
+    # ================================================================
+    # 每日结算
+    # ================================================================
+
+    def daily_tick(self, group_id: str) -> Dict[str, Any]:
+        """
+        每日结算：对所有群成员的资源消耗、建筑产出、随机事件进行处理
+        """
+        group = self.ensure_group(group_id)
+        group.advance_day()
+
+        players = self._players.get(group_id, {})
+        if not players:
+            return {
+                "day": group.current_day,
+                "season": group.current_season,
+                "danger_level": group.danger_level,
+                "announcements": [],
+                "player_count": 0,
+            }
+
+        announcements = []
+
+        for user_id, player in list(players.items()):
+            if not player.is_alive():
+                continue
+
+            # 1. 自然消耗
+            player.apply_daily_decay()
+
+            # 2. 建筑产出
+            self._apply_building_production(player)
+
+            # 3. 技能被动效果
+            surv_level = player.skills.get("survival", 0)
+            if surv_level > 0:
+                hunger_save = int(15 * surv_level * 0.05)
+                thirst_save = int(20 * surv_level * 0.05)
+                player.hunger = min(100, player.hunger + hunger_save)
+                player.thirst = min(100, player.thirst + thirst_save)
+
+            # 4. 医疗站自动治疗
+            hospital_level = player.buildings.get("hospital", 0)
+            if hospital_level > 0 and player.health < player.max_health:
+                heal = hospital_level * 10
+                player.health = min(player.max_health, player.health + heal)
+
+        # 5. 群组公告
+        if group.current_day % 5 == 0:
+            announcements.append(f"📢 第 {group.current_day} 天，危险等级: {'⭐' * group.danger_level}")
+
+        # 季节变化公告
+        if group.season_day == 1:
+            season_names = {"spring": "🌸 春季", "summer": "☀️ 夏季",
+                           "autumn": "🍂 秋季", "winter": "❄️ 冬季"}
+            announcements.append(f"🌍 季节更替：{season_names.get(group.current_season, group.current_season)}")
+
+        return {
+            "day": group.current_day,
+            "season": group.current_season,
+            "danger_level": group.danger_level,
+            "announcements": announcements,
+            "player_count": len(players),
+        }
+
+    # ================================================================
+    # 内部辅助方法
+    # ================================================================
+
+    def _pick_event(self, player: PlayerState, group: GroupGameState) -> Optional[GameEvent]:
+        """根据玩家和群组状态选择事件"""
+        # 优先检查是否有进行中的事件链
+        chain_event = self._check_chain_event(player, group)
+        if chain_event:
+            return chain_event
+
+        # 根据危险等级和天气调整事件类型权重
+        weather = group.weather
+        weather_weights = {
+            "clear": {},
+            "cloudy": {EventType.RESOURCE: -0.5},
+            "rain": {EventType.RESOURCE: 1.0, EventType.DANGER: -0.3},
+            "storm": {EventType.DANGER: 0.5, EventType.RESOURCE: -1.0},
+            "fog": {EventType.DANGER: 0.8, EventType.RESOURCE: -0.8},
+            "heatwave": {EventType.WEATHER: 1.5, EventType.RESOURCE: -0.5},
+            "cold_snap": {EventType.WEATHER: 1.5, EventType.DANGER: 0.3},
+        }
+
+        weights = {
+            EventType.RESOURCE: max(0.1, 3.0 - group.danger_level * 0.2),
+            EventType.DANGER: 1.0 + group.danger_level * 0.3,
+            EventType.OPPORTUNITY: 1.5,
+            EventType.WEATHER: 1.0,
+            EventType.SOCIAL: 1.0,
+            EventType.CHAIN: 0.8,
+        }
+
+        # 应用天气修正
+        for etype, modifier in weather_weights.get(weather, {}).items():
+            if etype in weights:
+                weights[etype] = max(0.1, weights[etype] + modifier)
+
+        # 加权随机选择事件类型
+        total = sum(weights.values())
+        r = random.random() * total
+        cumulative = 0
+        chosen_type = EventType.RESOURCE
+        for etype, w in weights.items():
+            cumulative += w
+            if r <= cumulative:
+                chosen_type = etype
+                break
+
+        # 获取该类型的候选事件，过滤天气专属事件
+        candidates = EventRegistry.get_by_type(chosen_type)
+        if weather != "clear":
+            # 优先选择天气专属事件
+            weather_candidates = [e for e in candidates if e.weather_only and weather in e.weather_only]
+            if weather_candidates and random.random() < 0.6:
+                candidates = weather_candidates
+
+        if not candidates:
+            return None
+
+        total_weight = sum(e.weight for e in candidates)
+        r = random.uniform(0, total_weight)
+        cum = 0
+        for event in candidates:
+            cum += event.weight
+            if r <= cum:
+                return event
+        return candidates[-1] if candidates else None
+
+    def _check_chain_event(self, player: PlayerState, group: GroupGameState) -> Optional[GameEvent]:
+        """检查是否有进行中的事件链"""
+        for chain_id, step in player.chain_progress.items():
+            # 查找该链下一步的事件
+            chain_events = [e for e in EventRegistry.get_all()
+                          if e.chain_id == chain_id and e.chain_order == step + 1]
+            if chain_events:
+                # 有概率触发（避免每次都触发链事件）
+                if random.random() < 0.3:
+                    return chain_events[0]
+        return None
+
+    def _apply_auto_result(self, player: PlayerState, result: Dict) -> str:
+        """应用自动结算结果"""
+        messages = []
+
+        if "description" in result:
+            messages.append(result["description"])
+
+        if "resources" in result:
+            for res, (min_n, max_n) in result["resources"].items():
+                amount = random.randint(min_n, max_n)
+                player.add_resource(res, amount)
+
+        if "thirst_decay_extra" in result:
+            player.thirst = max(0, player.thirst - result["thirst_decay_extra"])
+            messages.append(f"💧 口渴度额外下降 {result['thirst_decay_extra']} 点。")
+
+        if "hunger_decay_extra" in result:
+            player.hunger = max(0, player.hunger - result["hunger_decay_extra"])
+            messages.append(f"🍖 饱食度额外下降 {result['hunger_decay_extra']} 点。")
+
+        return "\n".join(messages) if messages else "事件已自动结算。"
+
+    def _resolve_combat(self, player: PlayerState, combat_data: Dict) -> Dict[str, Any]:
+        """战斗结算"""
+        enemy_attack = combat_data["enemy_attack"]
+        enemy_health = combat_data["enemy_health"]
+
+        # 玩家战斗力
+        player_power = player.attack + player.defense * 0.5
+        combat_level = player.skills.get("combat", 0)
+        player_power += combat_level * 2
+
+        # 敌人战斗力
+        enemy_power = enemy_attack + enemy_health * 0.3
+
+        # 战斗判定 (玩家胜率基于实力对比)
+        win_chance = player_power / (player_power + enemy_power)
+        win = random.random() < win_chance
+
+        if win:
+            player.stats["zombies_killed"] += 1
+            return {
+                "win": True,
+                "message": f"⚔️ 战斗胜利！你击败了敌人！（胜率 {win_chance:.0%}）",
+            }
+        else:
+            damage = random.randint(5, enemy_attack)
+            # 防御减免
+            damage = max(1, damage - player.defense // 3)
+            player.health = max(0, player.health - damage)
+            return {
+                "win": False,
+                "message": f"💥 战斗失败！受到了 {damage} 点伤害。",
+                "damage": damage,
+            }
+
+    def _apply_building_production(self, player: PlayerState):
+        """应用建筑每日产出"""
+        # 农场
+        farm_level = player.buildings.get("farm", 0)
+        if farm_level > 0:
+            food_prod = farm_level * 5
+            player.add_resource("food", food_prod)
+
+        # 水井
+        well_level = player.buildings.get("well", 0)
+        if well_level > 0:
+            water_prod = well_level * 5
+            player.add_resource("water", water_prod)
+
+        # 工坊被动产出（随机材料）
+        workshop_level = player.buildings.get("workshop", 0)
+        if workshop_level > 0 and random.random() < 0.3:
+            mats = ["scrap_metal", "electronics", "nails"]
+            player.add_item(random.choice(mats), random.randint(1, workshop_level))
+
+        # 陷阱装置：捕获小动物获得食物
+        trap_level = player.buildings.get("trap", 0)
+        if trap_level > 0 and random.random() < 0.4:
+            food_gain = trap_level * random.randint(2, 6)
+            player.add_resource("food", food_gain)
+
+        # 军械库被动：生产弹药
+        armory_level = player.buildings.get("armory", 0)
+        if armory_level > 0:
+            ammo_gain = armory_level * 2
+            player.add_resource("ammo", ammo_gain)
+
+    def _check_level_up(self, player: PlayerState) -> Optional[int]:
+        """检查并处理升级，支持连续多级升级"""
+        leveled = False
+        while True:
+            exp_needed = player.level * 100
+            if player.exp < exp_needed:
+                break
+            player.level += 1
+            player.exp -= exp_needed
+            player.max_health += 10
+            player.health = min(player.max_health, player.health + 10)
+            player.attack += 2
+            player.defense += 1
+            player.skill_points += 2  # 每级获得2个技能点
+            leveled = True
+        return player.level if leveled else None
+
+    def _roll_range(self, range_tuple: Tuple[int, int]) -> int:
+        """在范围内随机取值"""
+        return random.randint(range_tuple[0], range_tuple[1])
+
+    # ================================================================
+    # 玩家重生
+    # ================================================================
+
+    def respawn_player(self, user_id: str, group_id: str, nickname: str = "") -> PlayerState:
+        """重生玩家"""
+        # 保存旧玩家的统计
+        old_player = self._players.get(group_id, {}).get(user_id)
+        old_deaths = old_player.stats.get("deaths", 0) if old_player else 0
+        old_events = old_player.stats.get("events_triggered", 0) if old_player else 0
+        old_zombies = old_player.stats.get("zombies_killed", 0) if old_player else 0
+        old_crafted = old_player.stats.get("items_crafted", 0) if old_player else 0
+        old_actions = old_player.total_actions if old_player else 0
+        old_class = old_player.player_class if old_player else None
+        old_achievements = old_player.unlocked_achievements if old_player else []
+        old_titles = old_player.unlocked_titles if old_player else []
+        old_chain = old_player.chain_progress if old_player else {}
+        old_pvp_wins = old_player.pvp_wins if old_player else 0
+        old_pvp_losses = old_player.pvp_losses if old_player else 0
+
+        player = self.create_player(user_id, group_id, nickname, player_class=old_class)
+        # 保留旧统计数据
+        player.stats["deaths"] = old_deaths + 1
+        player.stats["events_triggered"] = old_events
+        player.stats["zombies_killed"] = old_zombies
+        player.stats["items_crafted"] = old_crafted
+        player.total_actions = old_actions
+        player.unlocked_achievements = old_achievements
+        player.unlocked_titles = old_titles
+        player.chain_progress = old_chain
+        player.pvp_wins = old_pvp_wins
+        player.pvp_losses = old_pvp_losses
+        return player
+
+    # ================================================================
+    # 成就系统
+    # ================================================================
+
+    def _check_achievements(self, player: PlayerState, group: GroupGameState) -> List[Dict]:
+        """检查并解锁成就"""
+        new_achievements = []
+        # 更新存活天数
+        player.days_survived = group.current_day
+
+        for achievement in AchievementRegistry.get_all():
+            if achievement.id in player.unlocked_achievements:
+                continue
+            if self._eval_achievement_condition(player, achievement.condition):
+                player.unlocked_achievements.append(achievement.id)
+                # 发放奖励
+                for item_id, count in achievement.reward_items.items():
+                    player.add_item(item_id, count)
+                for res, amount in achievement.reward_resources.items():
+                    player.resources[res] = player.resources.get(res, 0) + amount
+                if achievement.reward_exp > 0:
+                    player.exp += achievement.reward_exp
+                if achievement.reward_title:
+                    player.unlocked_titles.append(achievement.reward_title)
+                    if not player.active_title:
+                        player.active_title = achievement.reward_title
+                new_achievements.append({
+                    "name": achievement.name,
+                    "description": achievement.reward_description,
+                    "title": achievement.reward_title,
+                })
+
+        return new_achievements
+
+    def _eval_achievement_condition(self, player: PlayerState, condition: str) -> bool:
+        """评估成就条件"""
+        try:
+            # 构建安全的评估环境
+            safe_dict = {
+                "zombies_killed": player.stats.get("zombies_killed", 0),
+                "items_crafted": player.stats.get("items_crafted", 0),
+                "events_triggered": player.stats.get("events_triggered", 0),
+                "deaths": player.stats.get("deaths", 0),
+                "days_survived": player.days_survived,
+                "level": player.level,
+                "total_actions": player.total_actions,
+                "pvp_wins": player.pvp_wins,
+                "pvp_losses": player.pvp_losses,
+                "total_builds": sum(player.buildings.values()),
+            }
+            return bool(eval(condition, {"__builtins__": {}}, safe_dict))
+        except Exception:
+            return False
+
+    # ================================================================
+    # 技能加点系统
+    # ================================================================
+
+    def upgrade_skill(self, player: PlayerState, skill_id: str) -> Dict[str, Any]:
+        """升级技能"""
+        skill_def = SkillRegistry.get(skill_id)
+        if not skill_def:
+            return {"type": "error", "message": "⚠️ 未知的技能。"}
+
+        if player.skill_points <= 0:
+            return {"type": "error", "message": "⚠️ 没有可用的技能点！升级可以获得技能点。"}
+
+        current_level = player.skills.get(skill_id, 0)
+        if current_level >= skill_def.max_level:
+            return {"type": "error", "message": f"📚 {skill_def.name} 已达到最高等级 Lv.{skill_def.max_level}！"}
+
+        # 消耗技能点
+        player.skill_points -= 1
+        player.skills[skill_id] = current_level + 1
+
+        new_level = current_level + 1
+        effects = []
+        if "attack" in skill_def.effect_per_level:
+            bonus = int(skill_def.effect_per_level["attack"] * new_level)
+            effects.append(f"攻击力 +{bonus}")
+        if "heal_bonus" in skill_def.effect_per_level:
+            effects.append(f"治疗效果 +{int(skill_def.effect_per_level['heal_bonus'] * new_level * 100)}%")
+        if "loot_bonus" in skill_def.effect_per_level:
+            effects.append(f"搜索收益 +{int(skill_def.effect_per_level['loot_bonus'] * new_level * 100)}%")
+        if "hunger_decay_reduce" in skill_def.effect_per_level:
+            effects.append(f"每日消耗 -{int(skill_def.effect_per_level['hunger_decay_reduce'] * new_level * 100)}%")
+
+        effect_str = "、".join(effects) if effects else "效果提升"
+        return {
+            "type": "success",
+            "message": f"📚 {skill_def.name} 升级到 Lv.{new_level}！\n{effect_str}\n剩余技能点: {player.skill_points}",
+            "skill_name": skill_def.name,
+            "new_level": new_level,
+        }
+
+    # ================================================================
+    # PvP 偷袭系统
+    # ================================================================
+
+    PVP_COOLDOWN = 600  # 偷袭冷却 10 分钟
+    PVP_SHIELD_DURATION = 7200  # 新手保护 2 小时
+
+    def can_pvp_attack(self, attacker: PlayerState, target: PlayerState,
+                       group_id: str) -> Tuple[bool, str]:
+        """检查是否可以 PvP 攻击"""
+        if not attacker.is_alive():
+            return False, "💀 你已经死亡，无法偷袭。"
+        if not target.is_alive():
+            return False, "💀 目标已经死亡。"
+        if attacker.user_id == target.user_id:
+            return False, "⚠️ 你不能偷袭自己。"
+
+        # 检查攻击者冷却
+        if time.time() < attacker.pvp_cooldown_until:
+            remaining = int(attacker.pvp_cooldown_until - time.time())
+            return False, f"⏳ 偷袭冷却中，请等待 {remaining} 秒。"
+
+        # 检查目标保护
+        if time.time() < target.pvp_shield_until:
+            remaining = int(target.pvp_shield_until - time.time())
+            return False, f"🛡️ 目标处于新手保护期（剩余 {remaining} 秒），无法攻击。"
+
+        # 检查瞭望塔防御
+        watchtower_level = target.buildings.get("watchtower", 0)
+        if watchtower_level > 0:
+            evade_chance = watchtower_level * 0.1
+            if random.random() < evade_chance:
+                return False, f"🔭 目标的瞭望塔发现了你的踪迹，偷袭失败！"
+
+        return True, ""
+
+    def execute_pvp(self, attacker: PlayerState, target: PlayerState,
+                    group_id: str) -> Dict[str, Any]:
+        """执行 PvP 偷袭"""
+
+        # 设置攻击者冷却
+        attacker.pvp_cooldown_until = time.time() + self.PVP_COOLDOWN
+
+        # 计算战斗力
+        attacker_power = attacker.attack + attacker.defense * 0.5 + attacker.level * 2
+        target_power = target.attack + target.defense * 0.5 + target.level * 2
+
+        # 士兵职业加成
+        if attacker.player_class == "soldier":
+            attacker_power *= 1.2
+
+        win_chance = attacker_power / (attacker_power + target_power)
+
+        if random.random() < win_chance:
+            # 攻击者胜利：抢夺资源
+            target.last_attacked_by = attacker.user_id
+            damage = random.randint(15, 40)
+            target.health = max(0, target.health - damage)
+
+            # 抢夺资源（最多50%）
+            stolen_resources = {}
+            for res in ["food", "water", "medicine", "ammo", "fuel"]:
+                target_amount = target.resources.get(res, 0)
+                if target_amount > 0:
+                    steal = random.randint(1, max(1, target_amount // 2))
+                    target.resources[res] = target_amount - steal
+                    attacker.resources[res] = attacker.resources.get(res, 0) + steal
+                    stolen_resources[res] = steal
+
+            # 抢夺物品（随机1-2种）
+            stolen_items = {}
+            if target.inventory:
+                target_items = list(target.inventory.keys())
+                random.shuffle(target_items)
+                for item_id in target_items[:2]:
+                    count = target.inventory.get(item_id, 0)
+                    if count > 0:
+                        steal_count = random.randint(1, max(1, count // 2))
+                        target.remove_item(item_id, steal_count)
+                        attacker.add_item(item_id, steal_count)
+                        stolen_items[item_id] = steal_count
+
+            attacker.pvp_wins += 1
+            target.pvp_losses += 1
+            attacker.exp += random.randint(30, 80)
+
+            # 检查目标是否死亡
+            if target.health <= 0:
+                target.status = "dead"
+                target.stats["deaths"] += 1
+
+            return {
+                "type": "win",
+                "attacker_display": f"{attacker.get_title_display()}{attacker.nickname or attacker.user_id}",
+                "target_display": f"{target.get_title_display()}{target.nickname or target.user_id}",
+                "damage_dealt": damage,
+                "stolen_resources": stolen_resources,
+                "stolen_items": stolen_items,
+                "win_chance": win_chance,
+                "target_died": target.status == "dead",
+            }
+        else:
+            # 攻击者失败：自己受伤
+            damage = random.randint(10, 30)
+            attacker.health = max(0, attacker.health - damage)
+            attacker.pvp_losses += 1
+            target.pvp_wins += 1
+
+            if attacker.health <= 0:
+                attacker.status = "dead"
+                attacker.stats["deaths"] += 1
+
+            return {
+                "type": "lose",
+                "attacker_display": f"{attacker.get_title_display()}{attacker.nickname or attacker.user_id}",
+                "target_display": f"{target.get_title_display()}{target.nickname or target.user_id}",
+                "damage_taken": damage,
+                "win_chance": win_chance,
+                "attacker_died": attacker.status == "dead",
+            }
+
+    # ================================================================
+    # 称号系统
+    # ================================================================
+
+    def set_title(self, player: PlayerState, title: str) -> Dict[str, Any]:
+        """设置玩家称号"""
+        if title == "无" or title == "取消":
+            player.active_title = None
+            return {"type": "success", "message": "📛 已取消称号。"}
+
+        if title not in player.unlocked_titles:
+            return {"type": "error",
+                    "message": f"⚠️ 你还没有解锁称号「{title}」。可用的称号：" +
+                    ", ".join(player.unlocked_titles) if player.unlocked_titles else "暂无"}
+
+        player.active_title = title
+        return {"type": "success", "message": f"📛 已佩戴称号「{title}」！"}
+
+    def get_player_list(self, group_id: str) -> List[PlayerState]:
+        """获取群内所有玩家"""
+        return list(self._players.get(group_id, {}).values())
+
+    # ================================================================
+    # 数据序列化
+    # ================================================================
+
+    def export_data(self) -> Dict[str, Any]:
+        """导出所有数据"""
+        players_data = {}
+        for group_id, group_players in self._players.items():
+            players_data[group_id] = {
+                uid: p.to_dict() for uid, p in group_players.items()
+            }
+
+        groups_data = {
+            gid: g.to_dict() for gid, g in self._groups.items()
+        }
+
+        return {
+            "players": players_data,
+            "groups": groups_data,
+        }
+
+    def import_data(self, data: Dict[str, Any]):
+        """导入数据"""
+        for group_id, group_players in data.get("players", {}).items():
+            if group_id not in self._players:
+                self._players[group_id] = {}
+            for uid, pdata in group_players.items():
+                self._players[group_id][uid] = PlayerState.from_dict(pdata)
+
+        for gid, gdata in data.get("groups", {}).items():
+            self._groups[gid] = GroupGameState.from_dict(gdata)
