@@ -97,9 +97,6 @@ CMD_LEADERBOARD = "排行榜"
 CMD_RESPAWN = "重生"
 CMD_HELP = "帮助"
 CMD_WEATHER = "天气"
-CMD_IDLE = "挂机"
-CMD_HARVEST = "收菜"
-CMD_STOP_IDLE = "停止挂机"
 
 
 class SurvivorPlugin(Star):
@@ -136,7 +133,7 @@ class SurvivorPlugin(Star):
         self.name = "astrbot_plugin_survivor"
         self.desc = "末日生存文字游戏 - 挂机式QQ群文字游戏 v2.0"
         self.author = "AdeleNaumann"
-        self.version = "v2.2.0"
+        self.version = "v2.3.0"
 
         # 确保数据目录存在
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -405,39 +402,6 @@ class SurvivorPlugin(Star):
     async def handle_weather(self, event: AstrMessageEvent):
         group_id = str(event.get_group_id())
         result = self._cmd_world_status(group_id)
-        event.stop_event()
-        yield event.plain_result(result)
-
-    @filter.command(CMD_IDLE, "开启挂机收菜模式")
-    async def handle_idle(self, event: AstrMessageEvent):
-        user_id = str(event.get_sender_id())
-        group_id = str(event.get_group_id())
-        is_idle, result = self.engine.toggle_idle_mode(user_id, group_id)
-        event.stop_event()
-        yield event.plain_result(result)
-
-    @filter.command(CMD_STOP_IDLE, "停止挂机模式")
-    async def handle_stop_idle(self, event: AstrMessageEvent):
-        user_id = str(event.get_sender_id())
-        group_id = str(event.get_group_id())
-        player = self.engine.get_player(user_id, group_id)
-        if not player:
-            event.stop_event()
-            yield event.plain_result("⚠️ 你还没有开始生存！")
-            return
-        if not player.idle_mode:
-            event.stop_event()
-            yield event.plain_result("⚠️ 你当前不在挂机模式中。")
-            return
-        player.idle_mode = False
-        event.stop_event()
-        yield event.plain_result("🏃 已退出挂机模式。使用「探索」主动求生吧！")
-
-    @filter.command(CMD_HARVEST, "收取挂机累积的收益")
-    async def handle_harvest(self, event: AstrMessageEvent):
-        user_id = str(event.get_sender_id())
-        group_id = str(event.get_group_id())
-        result = self.engine.harvest_idle(user_id, group_id)
         event.stop_event()
         yield event.plain_result(result)
 
@@ -718,14 +682,7 @@ class SurvivorPlugin(Star):
         if group:
             lines.append(f"")
             lines.append(f"🌍 世界第 {group.current_day} 天 | {group.current_season} | 危险等级 {'⭐' * group.danger_level}")
-
-        # 挂机状态
-        if player.idle_mode:
-            idle_res_count = len(player.idle_accumulated)
-            idle_days = len(player.idle_log)
-            lines.append(f"")
-            lines.append(f"⏳ 挂机中 | 累积 {idle_days} 天 | {idle_res_count} 类资源待收取")
-            lines.append(f"  💡 使用「收菜」领取收益 | 「停止挂机」退出")
+            lines.append(f"⏳ 全自动搜集中 · 每游戏天自动入账 · 无需手动收菜")
 
         return "\n".join(lines)
 
@@ -965,7 +922,7 @@ class SurvivorPlugin(Star):
     def _cmd_help(self) -> str:
         """帮助信息"""
         return (
-            f"🏚️ ===== 末日生存 v2.2 帮助 =====\n"
+            f"🏚️ ===== 末日生存 v2.3 帮助 =====\n"
             f"\n"
             f"🎮 基础操作：\n"
             f"  · 开始生存 [名字] [职业] - 创建角色\n"
@@ -977,16 +934,9 @@ class SurvivorPlugin(Star):
             f"  · 装备 [物品名] - 装备武器或防具\n"
             f"  · 帮助 - 显示本帮助\n"
             f"\n"
-            f"⏳ 挂机收菜系统：\n"
-            f"  · 挂机 - 开启挂机模式，自动搜集资源\n"
-            f"  · 收菜 - 收取挂机累积的所有收益\n"
-            f"  · 停止挂机 - 退出挂机模式\n"
-            f"  · 挂机时每游戏天自动产出食物/水/材料\n"
-            f"  · 等级越高、技能越高，挂机收益越好\n"
-            f"\n"
             f"👤 职业系统：\n"
             f"  · 职业列表 - 查看可选职业\n"
-            f"  · 6种职业各有独特加成（也影响挂机收益）\n"
+            f"  · 6种职业各有独特加成（也影响自动搜集收益）\n"
             f"\n"
             f"🏗️ 建造系统：\n"
             f"  · 建造列表 - 查看可建造建筑\n"
@@ -1021,11 +971,12 @@ class SurvivorPlugin(Star):
             f"  · 重生 - 死亡后重新开始\n"
             f"\n"
             f"⏱️ 机制说明：\n"
-            f"  · 每{ACTION_COOLDOWN}秒可行动一次\n"
+            f"  · 创建角色后全自动搜集，每游戏天自动入账\n"
+            f"  · 每{ACTION_COOLDOWN}秒可执行一次「探索」主动行动\n"
             f"  · 每1小时结算一个游戏天\n"
             f"  · 建筑每日自动产出资源\n"
-            f"  · 挂机模式：开启后自动搜集，随时收菜\n"
-            f"  · 天气随机变化，影响探索体验"
+            f"  · 天气随机变化，影响探索体验\n"
+            f"  · 完全挂机即可，无需任何收菜操作！"
         )
 
     # ================================================================
