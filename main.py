@@ -15,16 +15,18 @@ import sys
 import threading
 import time
 import traceback
-from typing import Tuple, Optional
+from typing import Optional
 
 # 确保插件目录在 sys.path 中（解决 AstrBot 安装后导入失败的问题）
 _plugin_dir = os.path.dirname(os.path.abspath(__file__))
 if _plugin_dir not in sys.path:
     sys.path.insert(0, _plugin_dir)
 
-# AstrBot Star 基类
+# AstrBot Star 基类 + 事件系统
 try:
     from astrbot.api.star import Context, Star
+    from astrbot.api.event import filter, AstrMessageEvent
+    from astrbot.api import logger
 except ImportError:
     # 开发环境 mock
     class Star:
@@ -32,17 +34,27 @@ except ImportError:
             pass
     Context = None
 
-# AstrBot 消息依赖
-try:
-    from nakuru.entities.components import Plain, Image, At
-    from nakuru import GroupMessage, FriendMessage
-    from cores.qqbot.global_object import AstrMessageEvent
-except ImportError:
-    # 开发环境 mock
-    class Plain:
-        def __init__(self, text): self.text = text
     class AstrMessageEvent:
-        pass
+        message_str = ""
+        def get_sender_name(self): return "TestPlayer"
+        def get_sender_id(self): return "test_user"
+        def get_group_id(self): return "test_group"
+        def stop_event(self): pass
+        def plain_result(self, text):
+            class PlainResult:
+                def __init__(self, text): self.text = text
+            return PlainResult(text)
+
+    class filter:
+        class EventMessageType:
+            ALL = "ALL"
+            GROUP_MESSAGE = "GROUP_MESSAGE"
+            PRIVATE_MESSAGE = "PRIVATE_MESSAGE"
+        @staticmethod
+        def event_message_type(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
 
 from models import PlayerState, GroupGameState, ItemCategory
 from engine import SurvivorEngine, ACTION_COOLDOWN
@@ -82,10 +94,16 @@ class SurvivorPlugin(Star):
     - 帮助 / 生存帮助                查看帮助
     """
 
-    def __init__(self, context=None):
+    def __init__(self, context: Context = None):
         """初始化插件"""
         super().__init__(context)
         self.context = context
+
+        # 插件元数据（AstrBot Star 系统通过属性读取）
+        self.name = "survivor"
+        self.desc = "末日生存文字游戏 - 挂机式QQ群文字游戏 v2.0"
+        self.author = "adelenaumann"
+        self.version = "v2.0.0"
 
         # 确保数据目录存在
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -103,92 +121,46 @@ class SurvivorPlugin(Star):
         self._daily_timer_running = True
         self._start_daily_timer()
 
-        print("[Survivor] 末日生存游戏插件已加载！")
+        try:
+            logger.info("[Survivor] 末日生存游戏插件已加载！")
+        except NameError:
+            print("[Survivor] 末日生存游戏插件已加载！")
 
     # ================================================================
-    # AstrBot 核心接口
+    # AstrBot 事件监听 —— 核心入口
     # ================================================================
 
-    def run(self, ame: AstrMessageEvent) -> Tuple:
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def on_group_message(self, event: AstrMessageEvent):
         """
-        AstrBot 消息处理入口
+        监听所有群聊消息，匹配游戏指令。
 
-        所有群消息都会经过此函数。
-        返回 (是否处理, (成功状态, 回复内容, 指令名))
+        不使用命令前缀，直接匹配自然语言关键词。
+        匹配成功则阻止事件传播，避免 LLM 再回复。
         """
         try:
-            message = ame.message_str.strip() if hasattr(ame, 'message_str') else ""
+            message = event.message_str.strip() if event.message_str else ""
             if not message:
-                return False, None
+                return
 
             # 获取用户和群信息
-            user_id = self._get_user_id(ame)
-            group_id = self._get_group_id(ame)
-            nickname = self._get_nickname(ame)
+            user_id = str(event.get_sender_id())
+            group_id = str(event.get_group_id())
+            nickname = event.get_sender_name() or ""
 
             if not user_id or not group_id:
-                return False, None
+                return
 
             # 路由消息到对应处理器
             result = self._route_message(message, user_id, group_id, nickname)
 
             if result:
-                return True, tuple([True, result, "survivor"])
-            return False, None
+                event.stop_event()  # 阻止 LLM 和其他插件继续处理
+                yield event.plain_result(result)
 
         except Exception as e:
             traceback.print_exc()
-            return True, tuple([True, f"⚠️ 插件错误：{str(e)}", "survivor"])
-
-    def info(self):
-        """返回插件元信息"""
-        return {
-            "name": "survivor",
-            "desc": "末日生存文字游戏 - 挂机式QQ群文字游戏 v2.0",
-            "help": (
-                "🏚️ 末日生存 v2.0 使用说明：\n"
-                "━━━━━━━━━━━━━━━\n"
-                "🎮 基础指令：\n"
-                "  · 开始生存 [名字] [职业] - 创建角色\n"
-                "  · 探索 - 外出探索，触发随机事件\n"
-                "  · 选择 [数字] - 在事件中做出选择\n"
-                "  · 状态 - 查看生存状态\n"
-                "  · 背包 - 查看背包物品\n"
-                "  · 帮助 - 显示完整帮助\n"
-                "\n"
-                "👤 职业系统：\n"
-                "  · 职业列表 - 查看可选职业\n"
-                "  · 开始生存时选择职业获得不同加成\n"
-                "\n"
-                "🏗️ 建造系统：\n"
-                "  · 建造列表 - 查看可建造建筑\n"
-                "  · 建造 [名称] - 建造/升级建筑\n"
-                "\n"
-                "🔨 合成系统：\n"
-                "  · 配方 - 查看合成配方\n"
-                "  · 合成 [名称] [数量] - 合成物品\n"
-                "\n"
-                "📚 技能系统：\n"
-                "  · 技能列表 - 查看技能和技能点\n"
-                "  · 升级技能 [技能名] - 使用技能点升级\n"
-                "\n"
-                "🏆 成就称号：\n"
-                "  · 成就 - 查看已解锁成就\n"
-                "  · 称号列表 - 查看已解锁称号\n"
-                "  · 佩戴称号 [称号] - 佩戴称号\n"
-                "\n"
-                "⚔️ PvP系统：\n"
-                "  · 偷袭 [@玩家/QQ号] - 偷袭其他玩家\n"
-                "  · 胜利可抢夺对方资源\n"
-                "\n"
-                "🌤️ 其他：\n"
-                "  · 天气 - 查看当前天气和世界状态\n"
-                "  · 排行榜 - 群内排行\n"
-                "  · 重生 - 死亡后重新开始\n"
-            ),
-            "version": "v2.0.0",
-            "author": "adelenaumann"
-        }
+            yield event.plain_result(f"⚠️ 插件错误：{str(e)}")
 
     # ================================================================
     # 消息路由
@@ -1162,36 +1134,10 @@ class SurvivorPlugin(Star):
         self._save_data()
 
     # ================================================================
-    # 辅助方法
+    # 生命周期
     # ================================================================
 
-    def _get_user_id(self, ame: AstrMessageEvent) -> Optional[str]:
-        """从消息事件中获取用户ID"""
-        try:
-            if hasattr(ame, 'message_obj') and ame.message_obj:
-                return str(ame.message_obj.user_id)
-        except:
-            pass
-        return None
-
-    def _get_group_id(self, ame: AstrMessageEvent) -> Optional[str]:
-        """从消息事件中获取群ID"""
-        try:
-            if hasattr(ame, 'message_obj') and ame.message_obj:
-                if hasattr(ame.message_obj, 'group_id'):
-                    return str(ame.message_obj.group_id)
-        except:
-            pass
-        return None
-
-    def _get_nickname(self, ame: AstrMessageEvent) -> str:
-        """从消息事件中获取用户昵称"""
-        try:
-            if hasattr(ame, 'message_obj') and ame.message_obj:
-                if hasattr(ame.message_obj, 'sender') and ame.message_obj.sender:
-                    return str(ame.message_obj.sender.nickname or "")
-                if hasattr(ame.message_obj, 'nickname'):
-                    return str(ame.message_obj.nickname or "")
-        except:
-            pass
-        return ""
+    async def terminate(self):
+        """插件卸载时保存数据并停止定时器"""
+        self._daily_timer_running = False
+        self._save_data()
