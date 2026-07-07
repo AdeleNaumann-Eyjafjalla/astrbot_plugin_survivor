@@ -110,6 +110,8 @@ class Item:
     heal_amount: int = 0        # 恢复生命值
     hunger_restore: int = 0     # 恢复饱食度
     thirst_restore: int = 0     # 恢复口渴度
+    # 远程武器标记
+    is_ranged: bool = False     # 是否为远程武器（弹药消耗）
     # 其他
     durability: int = 100       # 耐久度
     max_durability: int = 100   # 最大耐久度

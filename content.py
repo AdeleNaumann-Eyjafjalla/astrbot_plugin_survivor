@@ -215,8 +215,9 @@ def init_default_items():
     ))
     ItemRegistry.register(Item(
         id="hunting_rifle", name="猎枪", category=ItemCategory.WEAPON,
-        description="一把老式猎枪，远程攻击的好帮手。",
-        attack_bonus=20, durability=60, max_durability=60, rarity="uncommon"
+        description="一把老式猎枪，远程攻击的好帮手。每次战斗消耗弹药。",
+        attack_bonus=20, durability=60, max_durability=60, rarity="uncommon",
+        is_ranged=True
     ))
     ItemRegistry.register(Item(
         id="fire_axe", name="消防斧", category=ItemCategory.WEAPON,
@@ -225,8 +226,9 @@ def init_default_items():
     ))
     ItemRegistry.register(Item(
         id="crossbow", name="十字弩", category=ItemCategory.WEAPON,
-        description="无声的远程武器，适合暗杀。",
-        attack_bonus=25, durability=70, max_durability=70, rarity="rare"
+        description="无声的远程武器，适合暗杀。每次战斗消耗弹药。",
+        attack_bonus=25, durability=70, max_durability=70, rarity="rare",
+        is_ranged=True
     ))
     ItemRegistry.register(Item(
         id="flame_sword", name="火焰剑", category=ItemCategory.WEAPON,

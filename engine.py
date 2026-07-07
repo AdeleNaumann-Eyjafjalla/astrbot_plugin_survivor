@@ -819,13 +819,38 @@ class SurvivorEngine:
 
         return "\n".join(messages) if messages else "事件已自动结算。"
 
+    def _use_ammo(self, player: PlayerState, count_range: tuple) -> tuple:
+        """使用弹药。返回 (攻击力扣除值, 弹药消耗信息字符串)。
+        如果玩家装备了远程武器且有弹药，消耗弹药，扣除0。
+        如果有远程武器但无弹药，扣除该武器的全部 attack_bonus（等于远程武器无法使用）。
+        如果无远程武器，扣除0。
+        """
+        weapon_id = player.equipped_weapon
+        if not weapon_id:
+            return 0, ""
+
+        weapon = ItemRegistry.get(weapon_id)
+        if not weapon or not getattr(weapon, "is_ranged", False):
+            return 0, ""
+
+        current_ammo = player.resources.get("ammo", 0)
+        if current_ammo <= 0:
+            return weapon.attack_bonus, "⚠️ 弹药耗尽！远程武器无法使用，本次战斗无武器加成。"
+
+        cost = random.randint(count_range[0], min(count_range[1], current_ammo))
+        player.resources["ammo"] = current_ammo - cost
+        return 0, f"🔫 消耗了 {cost} 弹药。剩余 {player.resources['ammo']}。"
+
     def _resolve_combat(self, player: PlayerState, combat_data: Dict) -> Dict[str, Any]:
         """战斗结算"""
         enemy_attack = combat_data["enemy_attack"]
         enemy_health = combat_data["enemy_health"]
 
+        # 弹药消耗（PVE: 1-3发），弹药耗尽时远程武器攻击加成完全失效
+        ammo_penalty, ammo_msg = self._use_ammo(player, (1, 3))
+
         # 玩家战斗力
-        player_power = player.attack + player.defense * 0.5
+        player_power = player.attack - ammo_penalty + player.defense * 0.5
         combat_level = player.skills.get("combat", 0)
         player_power += combat_level * 2
 
@@ -838,18 +863,21 @@ class SurvivorEngine:
 
         if win:
             player.stats["zombies_killed"] += 1
-            return {
-                "win": True,
-                "message": f"⚔️ 战斗胜利！你击败了敌人！（胜率 {win_chance:.0%}）",
-            }
+            msg = f"⚔️ 战斗胜利！你击败了敌人！（胜率 {win_chance:.0%}）"
+            if ammo_msg:
+                msg += "\n" + ammo_msg
+            return {"win": True, "message": msg}
         else:
             damage = random.randint(5, enemy_attack)
             # 防御减免
             damage = max(1, damage - player.defense // 3)
             player.health = max(0, player.health - damage)
+            msg = f"💥 战斗失败！受到了 {damage} 点伤害。"
+            if ammo_msg:
+                msg += "\n" + ammo_msg
             return {
                 "win": False,
-                "message": f"💥 战斗失败！受到了 {damage} 点伤害。",
+                "message": msg,
                 "damage": damage,
             }
 
@@ -1135,8 +1163,11 @@ class SurvivorEngine:
         # 设置攻击者冷却
         attacker.pvp_cooldown_until = time.time() + self.PVP_COOLDOWN
 
+        # 弹药消耗（PVP: 2-5发），弹药耗尽时远程武器攻击加成完全失效
+        ammo_penalty, ammo_msg = self._use_ammo(attacker, (2, 5))
+
         # 计算战斗力
-        attacker_power = attacker.attack + attacker.defense * 0.5 + attacker.level * 2
+        attacker_power = attacker.attack - ammo_penalty + attacker.defense * 0.5 + attacker.level * 2
         target_power = target.attack + target.defense * 0.5 + target.level * 2
 
         # 士兵职业加成
@@ -1192,6 +1223,7 @@ class SurvivorEngine:
                 "stolen_items": stolen_items,
                 "win_chance": win_chance,
                 "target_died": target.status == "dead",
+                "ammo_msg": ammo_msg,
             }
         else:
             # 攻击者失败：自己受伤
@@ -1211,6 +1243,7 @@ class SurvivorEngine:
                 "damage_taken": damage,
                 "win_chance": win_chance,
                 "attacker_died": attacker.status == "dead",
+                "ammo_msg": ammo_msg,
             }
 
     # ================================================================
