@@ -770,7 +770,7 @@ class SurvivorPlugin(Star):
             f"⚔️ 攻击: {player.attack} | 🛡️ 防御: {player.defense}",
             f"",
             f"📦 资源：",
-        ]
+        ])
 
         res_display = {"food": ("🍖", "食物"), "water": ("💧", "水"), "wood": ("🪵", "木材"),
                        "stone": ("🪨", "石料"), "iron": ("🔩", "铁"), "medicine": ("💊", "药品"),
