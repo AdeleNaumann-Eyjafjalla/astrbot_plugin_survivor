@@ -22,6 +22,12 @@ _plugin_dir = os.path.dirname(os.path.abspath(__file__))
 if _plugin_dir not in sys.path:
     sys.path.insert(0, _plugin_dir)
 
+# 清除旧字节码缓存，防止新增枚举成员后热加载报错
+import shutil
+for root, dirs, files in os.walk(_plugin_dir):
+    if "__pycache__" in dirs:
+        shutil.rmtree(os.path.join(root, "__pycache__"), ignore_errors=True)
+
 # AstrBot Star 基类 + 事件系统
 try:
     from astrbot.api.star import Context, Star
