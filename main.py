@@ -26,13 +26,14 @@ if _plugin_dir not in sys.path:
 try:
     from astrbot.api.star import Context, Star
     from astrbot.api.event import filter, AstrMessageEvent
-    from astrbot.api import logger
+    from astrbot.api import logger, AstrBotConfig
 except ImportError:
     # 开发环境 mock
     class Star:
-        def __init__(self, context=None):
+        def __init__(self, context=None, config=None):
             pass
     Context = None
+    AstrBotConfig = dict
 
     class AstrMessageEvent:
         message_str = ""
@@ -133,10 +134,11 @@ class SurvivorPlugin(Star):
     - 帮助 / 生存帮助                查看帮助
     """
 
-    def __init__(self, context: Context = None):
+    def __init__(self, context: Context = None, config: AstrBotConfig = None):
         """初始化插件"""
         super().__init__(context)
         self.context = context
+        self.config = config if config else {}
 
         # 插件元数据（AstrBot Star 系统通过属性读取）
         self.name = "astrbot_plugin_survivor"
@@ -201,6 +203,30 @@ class SurvivorPlugin(Star):
                 event.stop_event()
                 result = self._cmd_choice(user_id, group_id, int(msg))
                 yield event.plain_result(result)
+                return
+
+            # LLM 指令（混英文命令名 @filter.command 匹配有问题，在这里兜底）
+            if msg == "llm状态":
+                event.stop_event()
+                if not self._is_admin(user_id):
+                    yield event.plain_result(self.NO_ADMIN_MSG)
+                else:
+                    yield event.plain_result(self._cmd_llm_status())
+                return
+            if msg == "llm开关":
+                event.stop_event()
+                if not self._is_admin(user_id):
+                    yield event.plain_result(self.NO_ADMIN_MSG)
+                else:
+                    yield event.plain_result(self._cmd_llm_toggle())
+                return
+            if msg == "llm比例" or msg.startswith("llm比例 "):
+                event.stop_event()
+                if not self._is_admin(user_id):
+                    yield event.plain_result(self.NO_ADMIN_MSG)
+                else:
+                    ratio_str = msg.replace("llm比例", "", 1).strip()
+                    yield event.plain_result(self._cmd_llm_ratio(ratio_str))
                 return
 
         except Exception as e:
@@ -415,46 +441,36 @@ class SurvivorPlugin(Star):
         event.stop_event()
         yield event.plain_result(result)
 
-    @filter.command(CMD_LLM_STATUS, "查看大模型事件状态")
-    async def handle_llm_status(self, event: AstrMessageEvent):
-        result = self._cmd_llm_status()
-        event.stop_event()
-        yield event.plain_result(result)
-
-    @filter.command(CMD_LLM_TOGGLE, "开关大模型事件生成")
-    async def handle_llm_toggle(self, event: AstrMessageEvent):
-        result = self._cmd_llm_toggle()
-        event.stop_event()
-        yield event.plain_result(result)
-
-    @filter.command(CMD_LLM_RATIO, "设置大模型事件比例")
-    async def handle_llm_ratio(self, event: AstrMessageEvent):
-        msg = (event.message_str or "").strip()
-        # 提取比例数值
-        parts = msg.replace("llm比例", "", 1).strip().split()
-        ratio_str = parts[0] if parts else ""
-        result = self._cmd_llm_ratio(ratio_str)
-        event.stop_event()
-        yield event.plain_result(result)
-
-    # 中文别名
+    # LLM 指令统一在 catch-all 中处理（混英文命令名 @filter.command 匹配有问题）
     @filter.command(CMD_LLM_STATUS_CN, "查看大模型事件状态")
     async def handle_llm_status_cn(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
         event.stop_event()
-        yield event.plain_result(self._cmd_llm_status())
+        if not self._is_admin(user_id):
+            yield event.plain_result(self.NO_ADMIN_MSG)
+        else:
+            yield event.plain_result(self._cmd_llm_status())
 
     @filter.command(CMD_LLM_TOGGLE_CN, "开关大模型事件生成")
     async def handle_llm_toggle_cn(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
         event.stop_event()
-        yield event.plain_result(self._cmd_llm_toggle())
+        if not self._is_admin(user_id):
+            yield event.plain_result(self.NO_ADMIN_MSG)
+        else:
+            yield event.plain_result(self._cmd_llm_toggle())
 
     @filter.command(CMD_LLM_RATIO_CN, "设置大模型事件比例")
     async def handle_llm_ratio_cn(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
         msg = (event.message_str or "").strip()
         parts = msg.replace("大模型比例", "", 1).strip().split()
         ratio_str = parts[0] if parts else ""
         event.stop_event()
-        yield event.plain_result(self._cmd_llm_ratio(ratio_str))
+        if not self._is_admin(user_id):
+            yield event.plain_result(self.NO_ADMIN_MSG)
+        else:
+            yield event.plain_result(self._cmd_llm_ratio(ratio_str))
 
     # ================================================================
     # 指令处理
@@ -1038,6 +1054,15 @@ class SurvivorPlugin(Star):
             f"💡 每1小时为1个游戏日，每日会自动结算消耗和产出。"
         )
 
+    NO_ADMIN_MSG = "⚠️ 只有管理员才能使用 LLM 指令。请在插件配置中设置管理员 QQ。"
+
+    def _is_admin(self, user_id: str) -> bool:
+        """检查用户是否为管理员。未配置管理员时允许所有人使用。"""
+        admin_list = self.config.get("admin_qq", [])
+        if not admin_list:
+            return True  # 未配置管理员名单时，允许所有人使用（向后兼容）
+        return str(user_id) in [str(a) for a in admin_list]
+
     def _cmd_llm_status(self) -> str:
         """查看 LLM 事件生成状态"""
         enabled = self.engine.llm_enabled
@@ -1167,9 +1192,9 @@ class SurvivorPlugin(Star):
             f"  · 不同天气影响探索事件\n"
             f"\n"
             f"🤖 LLM 事件生成（需 AstrBot 已配置大模型）：\n"
-            f"  · LLM状态 - 查看 LLM 事件生成状态\n"
-            f"  · LLM开关 - 启用/禁用大模型事件\n"
-            f"  · LLM比例 [10-100] - 设置 LLM 事件出现概率\n"
+            f"  · llm状态 - 查看 LLM 事件生成状态\n"
+            f"  · llm开关 - 启用/禁用大模型事件\n"
+            f"  · llm比例 [10-100] - 设置 LLM 事件出现概率\n"
             f"  · 启用后约 35% 的探索事件由 AI 生成，每天补充 300 个\n"
             f"\n"
             f"📊 其他：\n"

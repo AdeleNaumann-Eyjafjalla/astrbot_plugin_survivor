@@ -1,0 +1,14 @@
+{
+  "admin_qq": {
+    "description": "管理员 QQ 号列表",
+    "type": "list",
+    "hint": "在此配置管理员的 QQ 号，只有管理员才能使用 LLM 相关指令（llm状态/llm开关/llm比例）",
+    "obvious_hint": true,
+    "default": [],
+    "items": {
+      "description": "QQ 号",
+      "type": "string",
+      "hint": "请输入管理员的 QQ 号"
+    }
+  }
+}
