@@ -266,6 +266,9 @@ class PlayerState:
         "deaths": 0,
     })
 
+    # === 全自动挂机 ===
+    idle_mode: bool = True   # 是否处于挂机状态（默认开启，全自动搜集）
+
     def is_alive(self) -> bool:
         return self.status != "dead"
 
@@ -382,12 +385,15 @@ class PlayerState:
             "total_actions": self.total_actions,
             "days_survived": self.days_survived,
             "stats": self.stats,
+            "idle_mode": self.idle_mode,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlayerState":
-        """从字典反序列化"""
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        """从字典反序列化（兼容旧版存档）"""
+        # 过滤出合法的 dataclass 字段
+        valid_fields = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid_fields)
 
 
 # ============================================================

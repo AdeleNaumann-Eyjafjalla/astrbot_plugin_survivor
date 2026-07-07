@@ -15,7 +15,6 @@ import sys
 import threading
 import time
 import traceback
-from typing import Optional
 
 # 确保插件目录在 sys.path 中（解决 AstrBot 安装后导入失败的问题）
 _plugin_dir = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +54,11 @@ except ImportError:
             def decorator(func):
                 return func
             return decorator
+        @staticmethod
+        def command(name, description=""):
+            def decorator(func):
+                return func
+            return decorator
 
 from models import PlayerState, GroupGameState, ItemCategory
 from engine import SurvivorEngine, ACTION_COOLDOWN
@@ -67,6 +71,35 @@ from content import (
 # 数据文件路径
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 SAVE_FILE = os.path.join(DATA_DIR, "save_data.json")
+
+# ================================================================
+# 命令常量 —— 使用 @filter.command 注册到 AstrBot 指令系统
+# ================================================================
+CMD_START = "开始生存"
+CMD_EXPLORE = "探索"
+CMD_CHOOSE = "选择"
+CMD_STATUS = "状态"
+CMD_INVENTORY = "背包"
+CMD_BUILD_LIST = "建造列表"
+CMD_BUILD = "建造"
+CMD_RECIPE = "配方"
+CMD_CRAFT = "合成"
+CMD_USE = "使用"
+CMD_EQUIP = "装备"
+CMD_CLASS_LIST = "职业列表"
+CMD_SKILL_LIST = "技能列表"
+CMD_UPGRADE_SKILL = "升级技能"
+CMD_ACHIEVEMENTS = "成就"
+CMD_TITLE_LIST = "称号列表"
+CMD_SET_TITLE = "佩戴称号"
+CMD_PVP = "偷袭"
+CMD_LEADERBOARD = "排行榜"
+CMD_RESPAWN = "重生"
+CMD_HELP = "帮助"
+CMD_WEATHER = "天气"
+CMD_IDLE = "挂机"
+CMD_HARVEST = "收菜"
+CMD_STOP_IDLE = "停止挂机"
 
 
 class SurvivorPlugin(Star):
@@ -100,10 +133,10 @@ class SurvivorPlugin(Star):
         self.context = context
 
         # 插件元数据（AstrBot Star 系统通过属性读取）
-        self.name = "survivor"
+        self.name = "astrbot_plugin_survivor"
         self.desc = "末日生存文字游戏 - 挂机式QQ群文字游戏 v2.0"
-        self.author = "adelenaumann"
-        self.version = "v2.0.0"
+        self.author = "AdeleNaumann"
+        self.version = "v2.2.0"
 
         # 确保数据目录存在
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -126,158 +159,287 @@ class SurvivorPlugin(Star):
         except NameError:
             print("[Survivor] 末日生存游戏插件已加载！")
 
+    async def initialize(self):
+        """Star 插件初始化钩子（异步），在此启动后台定时任务"""
+        pass
+
     # ================================================================
-    # AstrBot 事件监听 —— 核心入口
+    # 兜底监听：等待起名 + 数字选择（当有待处理事件时）
     # ================================================================
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         """
-        监听所有群聊消息，匹配游戏指令。
-
-        不使用命令前缀，直接匹配自然语言关键词。
-        匹配成功则阻止事件传播，避免 LLM 再回复。
+        Catch-all 兜底：
+        1. 如果玩家正在等待起名，任何群消息都作为名字处理
+        2. 如果玩家有待处理选择，数字 1-4 也作为选择处理
+        其他消息交给 @filter.command 处理
         """
         try:
-            message = event.message_str.strip() if event.message_str else ""
-            if not message:
-                return
-
-            # 获取用户和群信息
             user_id = str(event.get_sender_id())
             group_id = str(event.get_group_id())
-            nickname = event.get_sender_name() or ""
-
-            if not user_id or not group_id:
+            msg = (event.message_str or "").strip()
+            if not msg or not user_id or not group_id:
                 return
 
-            # 路由消息到对应处理器
-            result = self._route_message(message, user_id, group_id, nickname)
-
-            if result:
-                event.stop_event()  # 阻止 LLM 和其他插件继续处理
+            # 等待起名状态 —— 任何消息都作为名字
+            if self.engine.has_pending_name(user_id, group_id):
+                event.stop_event()
+                result = self._cmd_set_name(user_id, group_id, msg)
                 yield event.plain_result(result)
+                return
+
+            # 数字选择（当玩家有待处理选择事件时）
+            if msg in ("1", "2", "3", "4") and self.engine.has_pending_choice(user_id, group_id):
+                event.stop_event()
+                result = self._cmd_choice(user_id, group_id, int(msg))
+                yield event.plain_result(result)
+                return
 
         except Exception as e:
             traceback.print_exc()
             yield event.plain_result(f"⚠️ 插件错误：{str(e)}")
 
     # ================================================================
-    # 消息路由
+    # @filter.command 指令处理 —— 每个游戏指令独立注册
     # ================================================================
 
-    def _route_message(self, message: str, user_id: str, group_id: str, nickname: str) -> Optional[str]:
-        """消息路由：根据消息内容分发到对应处理器"""
-        msg = message.strip()
+    @filter.command(CMD_START, "开始生存，创建角色")
+    async def handle_start(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        nickname = event.get_sender_name() or ""
+        # 提取参数: "开始生存 张三分 战士" → args="张三分 战士"
+        msg = (event.message_str or "").strip()
+        args = msg[len("开始生存"):].strip() if msg.startswith("开始生存") else ""
+        result = self._cmd_start(user_id, group_id, nickname, args=args if args else None)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 最高优先级：等待起名状态 ===
-        if self.engine.has_pending_name(user_id, group_id):
-            return self._cmd_set_name(user_id, group_id, msg)
+    @filter.command(CMD_EXPLORE, "外出探索，触发随机事件")
+    async def handle_explore(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_explore(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 游戏开始（支持「开始生存 名字 职业」格式） ===
-        start_match = re.match(r'^(?:开始生存|创建角色|加入生存)\s*(.*)$', msg)
-        if start_match:
-            args = start_match.group(1).strip()
-            return self._cmd_start(user_id, group_id, nickname, args=args if args else None)
+    @filter.command(CMD_CHOOSE, "在事件中做出选择")
+    async def handle_choose(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        msg = (event.message_str or "").strip()
+        match = re.match(r'^选择\s*(\d+)', msg)
+        choice_idx = int(match.group(1)) if match else 0
+        result = self._cmd_choice(user_id, group_id, choice_idx) if choice_idx else "⚠️ 请输入「选择 数字」，例如「选择 1」"
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 探索行动 ===
-        if msg in ["探索", "行动", "外出", "搜索"]:
-            return self._cmd_explore(user_id, group_id)
+    @filter.command(CMD_STATUS, "查看生存状态")
+    async def handle_status(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_status(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 事件选择 ===
-        choice_match = re.match(r'^选择\s*(\d+)$', msg)
-        if choice_match:
-            return self._cmd_choice(user_id, group_id, int(choice_match.group(1)))
+    @filter.command(CMD_INVENTORY, "查看背包物品")
+    async def handle_inventory(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_inventory(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # 也支持纯数字作为选择（当有待处理事件时）
-        if re.match(r'^[1-4]$', msg) and self.engine.has_pending_choice(user_id, group_id):
-            return self._cmd_choice(user_id, group_id, int(msg))
+    @filter.command(CMD_BUILD_LIST, "查看可建造建筑")
+    async def handle_build_list(self, event: AstrMessageEvent):
+        result = self._cmd_build_list()
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 状态查看 ===
-        if msg in ["状态", "我的状态", "生存状态", "信息"]:
-            return self._cmd_status(user_id, group_id)
+    @filter.command(CMD_BUILD, "建造或升级建筑")
+    async def handle_build(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        building_name = (event.message_str or "").replace("建造", "", 1).strip()
+        if not building_name:
+            result = "⚠️ 请输入「建造 [建筑名]」，例如「建造 避难所」"
+        else:
+            result = self._cmd_build(user_id, group_id, building_name)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 背包 ===
-        if msg in ["背包", "物品", "我的物品", "仓库"]:
-            return self._cmd_inventory(user_id, group_id)
+    @filter.command(CMD_RECIPE, "查看合成配方")
+    async def handle_recipe(self, event: AstrMessageEvent):
+        result = self._cmd_recipe_list()
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 建造 ===
-        if msg == "建造列表":
-            return self._cmd_build_list()
-        if msg.startswith("建造"):
-            building_name = msg[2:].strip()
-            if building_name:
-                return self._cmd_build(user_id, group_id, building_name)
+    @filter.command(CMD_CRAFT, "合成物品")
+    async def handle_craft(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        parts = (event.message_str or "").replace("合成", "", 1).strip().split()
+        if not parts:
+            result = "⚠️ 请输入「合成 [物品名] [数量]」"
+        else:
+            item_name = parts[0]
+            count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            result = self._cmd_craft(user_id, group_id, item_name, count)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 合成 ===
-        if msg in ["配方", "配方列表", "合成列表"]:
-            return self._cmd_recipe_list()
-        if msg.startswith("合成"):
-            parts = msg[2:].strip().split()
-            if parts:
-                item_name = parts[0]
-                count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-                return self._cmd_craft(user_id, group_id, item_name, count)
+    @filter.command(CMD_USE, "使用消耗品")
+    async def handle_use_item(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        item_name = (event.message_str or "").replace("使用", "", 1).strip()
+        if not item_name:
+            result = "⚠️ 请输入「使用 [物品名]」"
+        else:
+            result = self._cmd_use_item(user_id, group_id, item_name)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 使用物品 ===
-        if msg.startswith("使用"):
-            item_name = msg[2:].strip()
-            if item_name:
-                return self._cmd_use_item(user_id, group_id, item_name)
+    @filter.command(CMD_EQUIP, "装备武器或防具")
+    async def handle_equip(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        item_name = (event.message_str or "").replace("装备", "", 1).strip()
+        if not item_name:
+            result = "⚠️ 请输入「装备 [物品名]」"
+        else:
+            result = self._cmd_use_item(user_id, group_id, item_name)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 装备 ===
-        if msg.startswith("装备"):
-            item_name = msg[2:].strip()
-            if item_name:
-                return self._cmd_use_item(user_id, group_id, item_name)
+    @filter.command(CMD_CLASS_LIST, "查看可选职业")
+    async def handle_class_list(self, event: AstrMessageEvent):
+        result = self._cmd_class_list()
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 职业列表 ===
-        if msg in ["职业列表", "职业", "天赋列表"]:
-            return self._cmd_class_list()
+    @filter.command(CMD_SKILL_LIST, "查看技能列表")
+    async def handle_skill_list(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_skill_list(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 技能 ===
-        if msg in ["技能列表", "技能"]:
-            return self._cmd_skill_list(user_id, group_id)
-        if msg.startswith("升级技能"):
-            skill_name = msg[4:].strip()
-            if skill_name:
-                return self._cmd_upgrade_skill(user_id, group_id, skill_name)
+    @filter.command(CMD_UPGRADE_SKILL, "升级技能")
+    async def handle_upgrade_skill(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        skill_name = (event.message_str or "").replace("升级技能", "", 1).strip()
+        if not skill_name:
+            result = "⚠️ 请输入「升级技能 [技能名]」"
+        else:
+            result = self._cmd_upgrade_skill(user_id, group_id, skill_name)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 成就 ===
-        if msg in ["成就", "我的成就", "成就列表"]:
-            return self._cmd_achievements(user_id, group_id)
+    @filter.command(CMD_ACHIEVEMENTS, "查看成就")
+    async def handle_achievements(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_achievements(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 称号 ===
-        if msg in ["称号列表", "我的称号", "称号"]:
-            return self._cmd_title_list(user_id, group_id)
-        if msg.startswith("佩戴称号"):
-            title = msg[4:].strip()
-            if title:
-                return self._cmd_set_title(user_id, group_id, title)
+    @filter.command(CMD_TITLE_LIST, "查看已解锁称号")
+    async def handle_title_list(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_title_list(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === PvP 偷袭 ===
-        if msg.startswith("偷袭"):
-            target_info = msg[2:].strip()
-            if target_info:
-                return self._cmd_pvp(user_id, group_id, target_info, ame=None)
+    @filter.command(CMD_SET_TITLE, "佩戴称号")
+    async def handle_set_title(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        title = (event.message_str or "").replace("佩戴称号", "", 1).strip()
+        if not title:
+            result = "⚠️ 请输入「佩戴称号 [称号名]」，或「佩戴称号 取消」取消称号"
+        else:
+            result = self._cmd_set_title(user_id, group_id, title)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 排行榜 ===
-        if msg in ["排行榜", "排名", "生存排行"]:
-            return self._cmd_leaderboard(group_id)
+    @filter.command(CMD_PVP, "偷袭其他玩家")
+    async def handle_pvp(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        target_info = (event.message_str or "").replace("偷袭", "", 1).strip()
+        if not target_info:
+            result = "⚠️ 请输入「偷袭 [玩家名/QQ号]」"
+        else:
+            result = self._cmd_pvp(user_id, group_id, target_info)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 重生 ===
-        if msg in ["重生", "重新开始", "再来一次"]:
-            return self._cmd_respawn(user_id, group_id, nickname)
+    @filter.command(CMD_LEADERBOARD, "查看群内生存排行")
+    async def handle_leaderboard(self, event: AstrMessageEvent):
+        group_id = str(event.get_group_id())
+        result = self._cmd_leaderboard(group_id)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 帮助 ===
-        if msg in ["帮助", "生存帮助", "help", "指令"]:
-            return self._cmd_help()
+    @filter.command(CMD_RESPAWN, "死亡后重生")
+    async def handle_respawn(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        nickname = event.get_sender_name() or ""
+        result = self._cmd_respawn(user_id, group_id, nickname)
+        event.stop_event()
+        yield event.plain_result(result)
 
-        # === 天气/世界状态 ===
-        if msg in ["天气", "世界状态", "世界", "群组状态"]:
-            return self._cmd_world_status(group_id)
+    @filter.command(CMD_HELP, "显示帮助信息")
+    async def handle_help(self, event: AstrMessageEvent):
+        result = self._cmd_help()
+        event.stop_event()
+        yield event.plain_result(result)
 
-        return None
+    @filter.command(CMD_WEATHER, "查看天气和世界状态")
+    async def handle_weather(self, event: AstrMessageEvent):
+        group_id = str(event.get_group_id())
+        result = self._cmd_world_status(group_id)
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_IDLE, "开启挂机收菜模式")
+    async def handle_idle(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        is_idle, result = self.engine.toggle_idle_mode(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_STOP_IDLE, "停止挂机模式")
+    async def handle_stop_idle(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        player = self.engine.get_player(user_id, group_id)
+        if not player:
+            event.stop_event()
+            yield event.plain_result("⚠️ 你还没有开始生存！")
+            return
+        if not player.idle_mode:
+            event.stop_event()
+            yield event.plain_result("⚠️ 你当前不在挂机模式中。")
+            return
+        player.idle_mode = False
+        event.stop_event()
+        yield event.plain_result("🏃 已退出挂机模式。使用「探索」主动求生吧！")
+
+    @filter.command(CMD_HARVEST, "收取挂机累积的收益")
+    async def handle_harvest(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self.engine.harvest_idle(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
 
     # ================================================================
     # 指令处理
@@ -309,23 +471,20 @@ class SurvivorPlugin(Star):
                 elif class_input in ClassRegistry.get_all():
                     player_class = class_input
 
-        # 如果带了名字参数，直接创建
-        if custom_name:
-            return self._create_new_player(user_id, group_id, custom_name, player_class)
+        # 必须带名字
+        if not custom_name:
+            return (
+                f"🏚️ ===== 末日生存 =====\n"
+                f"欢迎来到末日世界，幸存者！\n"
+                f"\n"
+                f"⚠️ 请使用「开始生存 [名字]」来创建角色\n"
+                f"💡 也可以加上职业：「开始生存 [名字] [职业]」\n"
+                f"💡 使用「职业列表」查看可选职业\n"
+                f"\n"
+                f"⚠️ 名字和职业一旦确定将无法更改！"
+            )
 
-        # 否则引导起名
-        self.engine.set_pending_name(user_id, group_id)
-        return (
-            f"🏚️ ===== 末日生存 =====\n"
-            f"欢迎来到末日世界，幸存者！\n"
-            f"\n"
-            f"在开始之前，请告诉我你的名字：\n"
-            f"💡 直接回复你的名字即可\n"
-            f"💡 也可以使用「开始生存 名字 职业」一步完成\n"
-            f"💡 使用「职业列表」查看可选职业\n"
-            f"\n"
-            f"⚠️ 名字和职业一旦确定将无法更改！"
-        )
+        return self._create_new_player(user_id, group_id, custom_name, player_class)
 
     def _cmd_set_name(self, user_id: str, group_id: str, name: str) -> str:
         """设置玩家名字"""
@@ -559,6 +718,14 @@ class SurvivorPlugin(Star):
         if group:
             lines.append(f"")
             lines.append(f"🌍 世界第 {group.current_day} 天 | {group.current_season} | 危险等级 {'⭐' * group.danger_level}")
+
+        # 挂机状态
+        if player.idle_mode:
+            idle_res_count = len(player.idle_accumulated)
+            idle_days = len(player.idle_log)
+            lines.append(f"")
+            lines.append(f"⏳ 挂机中 | 累积 {idle_days} 天 | {idle_res_count} 类资源待收取")
+            lines.append(f"  💡 使用「收菜」领取收益 | 「停止挂机」退出")
 
         return "\n".join(lines)
 
@@ -798,7 +965,7 @@ class SurvivorPlugin(Star):
     def _cmd_help(self) -> str:
         """帮助信息"""
         return (
-            f"🏚️ ===== 末日生存 v2.0 帮助 =====\n"
+            f"🏚️ ===== 末日生存 v2.2 帮助 =====\n"
             f"\n"
             f"🎮 基础操作：\n"
             f"  · 开始生存 [名字] [职业] - 创建角色\n"
@@ -806,10 +973,20 @@ class SurvivorPlugin(Star):
             f"  · 选择 [数字] - 在事件中做出选择\n"
             f"  · 状态 - 查看生存状态\n"
             f"  · 背包 - 查看背包物品\n"
+            f"  · 使用 [物品名] - 使用消耗品\n"
+            f"  · 装备 [物品名] - 装备武器或防具\n"
+            f"  · 帮助 - 显示本帮助\n"
+            f"\n"
+            f"⏳ 挂机收菜系统：\n"
+            f"  · 挂机 - 开启挂机模式，自动搜集资源\n"
+            f"  · 收菜 - 收取挂机累积的所有收益\n"
+            f"  · 停止挂机 - 退出挂机模式\n"
+            f"  · 挂机时每游戏天自动产出食物/水/材料\n"
+            f"  · 等级越高、技能越高，挂机收益越好\n"
             f"\n"
             f"👤 职业系统：\n"
             f"  · 职业列表 - 查看可选职业\n"
-            f"  · 6种职业各有独特加成\n"
+            f"  · 6种职业各有独特加成（也影响挂机收益）\n"
             f"\n"
             f"🏗️ 建造系统：\n"
             f"  · 建造列表 - 查看可建造建筑\n"
@@ -843,11 +1020,12 @@ class SurvivorPlugin(Star):
             f"  · 排行榜 - 群内排行\n"
             f"  · 重生 - 死亡后重新开始\n"
             f"\n"
-            f"⏱️ 挂机说明：\n"
+            f"⏱️ 机制说明：\n"
             f"  · 每{ACTION_COOLDOWN}秒可行动一次\n"
-            f"  · 每1小时结算一个游戏日\n"
+            f"  · 每1小时结算一个游戏天\n"
             f"  · 建筑每日自动产出资源\n"
-            f"  · 天气随机变化，影响游戏体验\n"
+            f"  · 挂机模式：开启后自动搜集，随时收菜\n"
+            f"  · 天气随机变化，影响探索体验"
         )
 
     # ================================================================

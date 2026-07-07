@@ -648,7 +648,16 @@ class SurvivorEngine:
                 heal = hospital_level * 10
                 player.health = min(player.max_health, player.health + heal)
 
-        # 5. 群组公告
+            # 5. 挂机收菜系统——为挂机玩家累积额外资源
+            if player.idle_mode:
+                self._idle_accumulate(player)
+                player.days_survived += 1
+
+            else:
+                # 非挂机模式，存活天数仅在非挂机时由探索增加
+                pass
+
+        # 6. 群组公告
         if group.current_day % 5 == 0:
             announcements.append(f"📢 第 {group.current_day} 天，危险等级: {'⭐' * group.danger_level}")
 
@@ -833,6 +842,189 @@ class SurvivorEngine:
         if armory_level > 0:
             ammo_gain = armory_level * 2
             player.add_resource("ammo", ammo_gain)
+
+    # ================================================================
+    # 挂机收菜系统
+    # ================================================================
+
+    def _idle_accumulate(self, player: PlayerState):
+        """
+        挂机模式每日额外收益累积到 idle_accumulated
+        挂机中玩家会自动进行基础搜集，收益比手动探索低但稳定
+        """
+        now = time.time()
+        if player.last_harvest_time <= 0:
+            player.last_harvest_time = now
+
+        # === 基础收益（每游戏天） ===
+        base = {"food": 4, "water": 3, "wood": 2, "stone": 1}
+
+        # 等级加成：每 5 级 +20%
+        level_bonus = 1.0 + (player.level // 5) * 0.2
+
+        # 技能加成：scavenging 每级 +8%
+        scav_level = player.skills.get("scavenging", 0)
+        skill_bonus = 1.0 + scav_level * 0.08
+
+        # 职业加成
+        class_bonus = 1.0
+        class_resources = {}
+        if player.player_class == "scavenger":
+            class_bonus = 1.25  # 拾荒者 +25%
+        elif player.player_class == "survivalist":
+            class_resources = {"food": 1.5, "water": 1.5}  # 生存专家食物水 +50%
+        elif player.player_class == "engineer":
+            class_resources = {"wood": 2.0, "stone": 2.0, "iron": 2.0}  # 工程师建材 +100%
+        elif player.player_class == "merchant":
+            class_resources = {"medicine": 2.0}  # 商人药品 +100%
+
+        for res, amount in base.items():
+            gain = int(amount * level_bonus * skill_bonus * class_bonus)
+            # 职业专项加成
+            if res in class_resources:
+                gain = int(gain * class_resources[res])
+            if res not in player.idle_accumulated:
+                player.idle_accumulated[res] = 0
+            player.idle_accumulated[res] += max(1, gain)
+
+        # 有概率获得额外材料（等级越高概率越大）
+        if random.random() < min(0.3 + player.level * 0.02, 0.7):
+            bonus_items = ["scrap_metal", "nails", "rope", "electronics", "cloth", "herb", "wood_plank"]
+            item = random.choice(bonus_items)
+            player.idle_accumulated[f"item:{item}"] = player.idle_accumulated.get(f"item:{item}", 0) + 1
+
+        # 低概率特殊物品
+        if random.random() < 0.03:
+            rare_items = ["bandage", "matchbox", "canned_food", "battery"]
+            item = random.choice(rare_items)
+            player.idle_accumulated[f"item:{item}"] = player.idle_accumulated.get(f"item:{item}", 0) + 1
+
+        # 小概率获得经验
+        if random.random() < 0.15:
+            exp_gain = random.randint(5, 15 + player.level * 2)
+            player.idle_accumulated["exp"] = player.idle_accumulated.get("exp", 0) + exp_gain
+
+        # 日志记录（最多保留 20 条）
+        log_entries = [
+            f"🔍 第{player.days_survived + 1}天：搜集到食物 x{max(1, int(base['food'] * level_bonus * skill_bonus * class_bonus))}",
+            f"💧 收集雨水，获得了一些水",
+            f"🪓 收集了一些木材",
+            f"🪨 发现了一些有用的石料",
+            f"📻 听到远处有动静...",
+            f"🌿 采集了一些草药",
+            f"🔩 在废墟中翻找，找到了一些金属零件",
+            f"🐇 抓到一只野兔",
+            f"🕊️ 今天很平静，适合收集资源",
+            f"💊 发现了一个废弃的急救包",
+        ]
+        player.idle_log.append(random.choice(log_entries))
+        if len(player.idle_log) > 20:
+            player.idle_log = player.idle_log[-20:]
+
+        # 自动治疗（挂机时缓慢恢复）
+        if player.health < player.max_health:
+            idle_heal = 1 + (player.level // 10)
+            if player.player_class == "doctor":
+                idle_heal = int(idle_heal * 1.5)
+            player.health = min(player.max_health, player.health + idle_heal)
+
+    def toggle_idle_mode(self, user_id: str, group_id: str) -> Tuple[bool, str]:
+        """
+        切换挂机模式；返回 (当前状态, 提示信息)
+        """
+        player = self.get_player(user_id, group_id)
+        if not player or not player.is_alive():
+            return False, "⚠️ 你还没有开始生存！使用「开始生存 [名字]」创建角色。"
+        player.idle_mode = not player.idle_mode
+        if player.idle_mode:
+            return True, (
+                f"⏳ 挂机模式已开启！\n"
+                f"从现在开始，每游戏天（约1小时）会自动搜集资源。\n"
+                f"随时使用「收菜」领取累积的收益。\n"
+                f"使用「停止挂机」可退出挂机模式。"
+            )
+        else:
+            return False, "🏃 已退出挂机模式。使用「探索」主动求生吧！"
+
+    def harvest_idle(self, user_id: str, group_id: str) -> str:
+        """
+        收取挂机累积的资源，返回格式化结果
+        """
+        player = self.get_player(user_id, group_id)
+        if not player or not player.is_alive():
+            return "⚠️ 你还没有开始生存！"
+
+        if not player.idle_accumulated:
+            if player.idle_mode:
+                return "📦 挂机中，还没有累积任何收益，再等一会儿吧～"
+            return "⚠️ 你没有挂机累积的收益。使用「挂机」开启挂机模式吧！"
+
+        lines = ["🧺 ===== 收菜啦！ =====", ""]
+
+        # 资源
+        res_lines = []
+        res_names = {
+            "food": "🍞 食物", "water": "💧 水", "wood": "🪵 木材",
+            "stone": "🪨 石料", "iron": "⛏️ 铁", "medicine": "💊 药品",
+            "ammo": "🔫 弹药", "fuel": "⛽ 燃料"
+        }
+        for res, count in sorted(player.idle_accumulated.items()):
+            if res.startswith("item:"):
+                continue
+            if res == "exp":
+                continue
+            if count > 0:
+                player.add_resource(res, count)
+                res_lines.append(f"  {res_names.get(res, res)} +{count}")
+
+        if res_lines:
+            lines.append("📦 资源收入：")
+            lines.extend(res_lines)
+
+        # 物品
+        item_lines = []
+        for key, count in sorted(player.idle_accumulated.items()):
+            if key.startswith("item:"):
+                item_id = key[5:]
+                item = ItemRegistry.get(item_id)
+                name = item.name if item else item_id
+                player.add_item(item_id, count)
+                item_lines.append(f"  {name} x{count}")
+
+        if item_lines:
+            lines.append("")
+            lines.append("🎒 捡到的物品：")
+            lines.extend(item_lines)
+
+        # 经验
+        exp_gain = player.idle_accumulated.get("exp", 0)
+        if exp_gain > 0:
+            player.exp += exp_gain
+            lines.append("")
+            lines.append(f"⭐ 经验 +{exp_gain}")
+            new_level = self._check_level_up(player)
+            if new_level:
+                lines.append(f"🎉 升级了！当前等级 Lv.{new_level}")
+
+        # 挂机天数
+        idle_days = len(player.idle_log) if player.idle_mode else 0
+        if idle_days > 0:
+            lines.append("")
+            lines.append(f"📅 累计挂机 {idle_days} 天")
+
+        # 最近的日志
+        if player.idle_log:
+            lines.append("")
+            lines.append("📋 最近的挂机日志：")
+            for log_entry in player.idle_log[-3:]:
+                lines.append(f"  {log_entry}")
+
+        # 清空累积
+        player.idle_accumulated.clear()
+        player.idle_log.clear()
+        player.last_harvest_time = time.time()
+
+        return "\n".join(lines)
 
     def _check_level_up(self, player: PlayerState) -> Optional[int]:
         """检查并处理升级，支持连续多级升级"""
