@@ -17,6 +17,7 @@ from content import (
     ItemRegistry, BuildingRegistry, EventRegistry,
     SkillRegistry, RecipeRegistry, AchievementRegistry, ClassRegistry
 )
+import llm_events
 
 
 # 行动冷却时间（秒）
@@ -48,6 +49,10 @@ class SurvivorEngine:
         self._pending_choices: Dict[str, Dict[str, Dict]] = {}
         # 等待起名的玩家: {group_id: {user_id: True}}
         self._pending_names: Dict[str, Dict[str, bool]] = {}
+
+        # LLM 事件开关及比例（0.0 ~ 1.0，默认 30% 概率使用大模型生成的事件）
+        self.llm_event_ratio: float = 0.3
+        self.llm_enabled: bool = True
 
     # ================================================================
     # 内部工具方法
@@ -278,8 +283,12 @@ class SurvivorEngine:
                     for item_id, (min_n, max_n) in result["rewards"]["items"].items():
                         count = random.randint(min_n, max_n)
                         if count > 0:
-                            player.add_item(item_id, count)
-                            items_gained[item_id] = items_gained.get(item_id, 0) + count
+                            if self._is_resource_id(item_id):
+                                player.add_resource(item_id, count)
+                                resources_gained[item_id] = resources_gained.get(item_id, 0) + count
+                            else:
+                                player.add_item(item_id, count)
+                                items_gained[item_id] = items_gained.get(item_id, 0) + count
                 # 战斗胜利后的资源奖励（来自事件定义的 rewards.resources）
                 if "rewards" in result and "resources" in result["rewards"]:
                     for res, (min_n, max_n) in result["rewards"]["resources"].items():
@@ -332,8 +341,12 @@ class SurvivorEngine:
             for item_id, (min_n, max_n) in result["items"].items():
                 count = random.randint(min_n, max_n)
                 if count > 0:
-                    player.add_item(item_id, count)
-                    items_gained[item_id] = items_gained.get(item_id, 0) + count
+                    if self._is_resource_id(item_id):
+                        player.add_resource(item_id, count)
+                        resources_gained[item_id] = resources_gained.get(item_id, 0) + count
+                    else:
+                        player.add_item(item_id, count)
+                        items_gained[item_id] = items_gained.get(item_id, 0) + count
 
         # 处理经验获得
         if "exp" in result:
@@ -436,11 +449,18 @@ class SurvivorEngine:
             cost = temp_building.get_upgrade_cost()
 
         # 检查资源
+        res_names = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石料",
+                    "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
         for res, amount in cost.items():
             if player.get_resource(res) < amount:
+                res_label = res_names.get(res, res)
+                # 也可能是物品消耗，尝试查物品名
+                item = ItemRegistry.get(res)
+                if item:
+                    res_label = item.name
                 return {
                     "type": "error",
-                    "message": f"⚠️ 资源不足！需要 {amount} {res}，你只有 {player.get_resource(res)}。"
+                    "message": f"⚠️ 资源不足！需要 {amount} {res_label}，你只有 {player.get_resource(res)}。"
                 }
 
         # 消耗资源
@@ -726,6 +746,12 @@ class SurvivorEngine:
             if weather_candidates and random.random() < 0.6:
                 candidates = weather_candidates
 
+        # 尝试使用 LLM 生成的事件（按比例替换内置事件）
+        if self.llm_enabled and random.random() < self.llm_event_ratio:
+            llm_event = llm_events.pop_event()
+            if llm_event:
+                return llm_event
+
         if not candidates:
             return None
 
@@ -906,6 +932,13 @@ class SurvivorEngine:
         """在范围内随机取值"""
         return random.randint(range_tuple[0], range_tuple[1])
 
+    # 合法的资源类型 ID 集合（用于防止资源被错误加入背包）
+    _RESOURCE_IDS = {"food", "water", "wood", "stone", "iron", "medicine", "ammo", "fuel"}
+
+    def _is_resource_id(self, item_id: str) -> bool:
+        """判断一个 ID 是否是资源类型（而非物品）"""
+        return item_id in self._RESOURCE_IDS
+
     # ================================================================
     # 玩家重生
     # ================================================================
@@ -957,7 +990,10 @@ class SurvivorEngine:
                 player.unlocked_achievements.append(achievement.id)
                 # 发放奖励
                 for item_id, count in achievement.reward_items.items():
-                    player.add_item(item_id, count)
+                    if self._is_resource_id(item_id):
+                        player.resources[item_id] = player.resources.get(item_id, 0) + count
+                    else:
+                        player.add_item(item_id, count)
                 for res, amount in achievement.reward_resources.items():
                     player.resources[res] = player.resources.get(res, 0) + amount
                 if achievement.reward_exp > 0:

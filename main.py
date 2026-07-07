@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+import asyncio
 import traceback
 
 # 确保插件目录在 sys.path 中（解决 AstrBot 安装后导入失败的问题）
@@ -67,6 +68,7 @@ from content import (
     EventRegistry, SkillRegistry, RecipeRegistry,
     AchievementRegistry, ClassRegistry
 )
+import llm_events
 
 # 数据文件路径
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -97,6 +99,13 @@ CMD_LEADERBOARD = "排行榜"
 CMD_RESPAWN = "重生"
 CMD_HELP = "帮助"
 CMD_WEATHER = "天气"
+CMD_LLM_STATUS = "llm状态"
+CMD_LLM_TOGGLE = "llm开关"
+CMD_LLM_RATIO = "llm比例"
+# 中文别名
+CMD_LLM_STATUS_CN = "大模型状态"
+CMD_LLM_TOGGLE_CN = "大模型开关"
+CMD_LLM_RATIO_CN = "大模型比例"
 
 
 class SurvivorPlugin(Star):
@@ -131,7 +140,7 @@ class SurvivorPlugin(Star):
 
         # 插件元数据（AstrBot Star 系统通过属性读取）
         self.name = "astrbot_plugin_survivor"
-        self.desc = "末日生存文字游戏 - 挂机式QQ群文字游戏 v2.0"
+        self.desc = "末日生存文字游戏 v2.5 - 支持大模型生成随机事件"
         self.author = "AdeleNaumann"
         self.version = "v2.5.0"
 
@@ -158,7 +167,8 @@ class SurvivorPlugin(Star):
 
     async def initialize(self):
         """Star 插件初始化钩子（异步），在此启动后台定时任务"""
-        pass
+        # 尝试启用 LLM 事件生成
+        await self._init_llm_events()
 
     # ================================================================
     # 兜底监听：等待起名 + 数字选择（当有待处理事件时）
@@ -405,6 +415,47 @@ class SurvivorPlugin(Star):
         event.stop_event()
         yield event.plain_result(result)
 
+    @filter.command(CMD_LLM_STATUS, "查看大模型事件状态")
+    async def handle_llm_status(self, event: AstrMessageEvent):
+        result = self._cmd_llm_status()
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_LLM_TOGGLE, "开关大模型事件生成")
+    async def handle_llm_toggle(self, event: AstrMessageEvent):
+        result = self._cmd_llm_toggle()
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_LLM_RATIO, "设置大模型事件比例")
+    async def handle_llm_ratio(self, event: AstrMessageEvent):
+        msg = (event.message_str or "").strip()
+        # 提取比例数值
+        parts = msg.replace("llm比例", "", 1).strip().split()
+        ratio_str = parts[0] if parts else ""
+        result = self._cmd_llm_ratio(ratio_str)
+        event.stop_event()
+        yield event.plain_result(result)
+
+    # 中文别名
+    @filter.command(CMD_LLM_STATUS_CN, "查看大模型事件状态")
+    async def handle_llm_status_cn(self, event: AstrMessageEvent):
+        event.stop_event()
+        yield event.plain_result(self._cmd_llm_status())
+
+    @filter.command(CMD_LLM_TOGGLE_CN, "开关大模型事件生成")
+    async def handle_llm_toggle_cn(self, event: AstrMessageEvent):
+        event.stop_event()
+        yield event.plain_result(self._cmd_llm_toggle())
+
+    @filter.command(CMD_LLM_RATIO_CN, "设置大模型事件比例")
+    async def handle_llm_ratio_cn(self, event: AstrMessageEvent):
+        msg = (event.message_str or "").strip()
+        parts = msg.replace("大模型比例", "", 1).strip().split()
+        ratio_str = parts[0] if parts else ""
+        event.stop_event()
+        yield event.plain_result(self._cmd_llm_ratio(ratio_str))
+
     # ================================================================
     # 指令处理
     # ================================================================
@@ -515,8 +566,10 @@ class SurvivorPlugin(Star):
             return result["message"]
 
         # 构建事件消息
+        is_llm = result.get('event_id', '').startswith('llm_')
+        llm_badge = " 🤖AI生成" if is_llm else ""
         lines = [
-            f"🎲 ===== 探索结果 =====",
+            f"🎲 ===== 探索结果{llm_badge} =====",
             f"📌 {result['event_name']}",
             f"",
             f"📝 {result['description']}",
@@ -543,12 +596,18 @@ class SurvivorPlugin(Star):
         if not player:
             return "⚠️ 你还没有开始生存！"
 
+        # 检查待处理事件是否为 LLM 生成
+        pending = self.engine._get_pending_choice(user_id, group_id)
+        is_llm = (pending is not None and pending.get("event") is not None
+                  and pending["event"].id.startswith("llm_"))
+
         result = self.engine.handle_choice(player, choice_index)
 
         if result["type"] == "error":
             return result["message"]
 
-        lines = ["📋 ===== 行动结果 ====="]
+        llm_badge = " 🤖AI生成" if is_llm else ""
+        lines = [f"📋 ===== 行动结果{llm_badge} ====="]
 
         for msg in result["messages"]:
             lines.append(msg)
@@ -646,11 +705,13 @@ class SurvivorPlugin(Star):
             f"📦 资源：",
         ]
 
-        res_icons = {"food": "🍖", "water": "💧", "wood": "🪵", "stone": "🪨",
-                    "iron": "🔩", "medicine": "💊", "ammo": "🔫", "fuel": "⛽"}
+        res_display = {"food": ("🍖", "食物"), "water": ("💧", "水"), "wood": ("🪵", "木材"),
+                       "stone": ("🪨", "石料"), "iron": ("🔩", "铁"), "medicine": ("💊", "药品"),
+                       "ammo": ("🔫", "弹药"), "fuel": ("⛽", "燃料")}
         for res, amount in player.resources.items():
             if amount > 0:
-                lines.append(f"  {res_icons.get(res, '📦')} {res}: {amount}")
+                icon, name = res_display.get(res, ("📦", res))
+                lines.append(f"  {icon} {name}: {amount}")
 
         # 装备
         if player.equipped_weapon or player.equipped_armor:
@@ -681,7 +742,8 @@ class SurvivorPlugin(Star):
 
         if group:
             lines.append(f"")
-            lines.append(f"🌍 世界第 {group.current_day} 天 | {group.current_season} | 危险等级 {'⭐' * group.danger_level}")
+            season_names = {"spring": "🌸春季", "summer": "☀️夏季", "autumn": "🍂秋季", "winter": "❄️冬季"}
+            lines.append(f"🌍 世界第 {group.current_day} 天 | {season_names.get(group.current_season, group.current_season)} | 危险等级 {'⭐' * group.danger_level}")
             lines.append(f"⏳ 全自动搜集中 · 每游戏天自动入账")
 
         return "\n".join(lines)
@@ -712,7 +774,8 @@ class SurvivorPlugin(Star):
             for item_id, count in player.inventory.items():
                 item = ItemRegistry.get(item_id)
                 if item and item.category == cat:
-                    cat_items.append(f"  {item.name} x{count} (稀有度: {item.rarity})")
+                    rarity_cn = {"common": "普通", "uncommon": "稀有", "rare": "精良", "epic": "史诗", "legendary": "传说"}
+                    cat_items.append(f"  {item.name} x{count} ({rarity_cn.get(item.rarity, item.rarity)})")
                 elif not item:
                     cat_items.append(f"  {item_id} x{count}")
             if cat_items:
@@ -796,10 +859,18 @@ class SurvivorPlugin(Star):
             return result["message"]
 
         # 展示消耗
-        cost_str = " ".join(f"{k}x{v}" for k, v in result["cost"].items())
+        res_icons = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石头",
+                    "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
+        cost_parts = []
+        for k, v in result["cost"].items():
+            if k in res_icons:
+                cost_parts.append(f"{res_icons[k]}x{v}")
+            else:
+                item = ItemRegistry.get(k)
+                cost_parts.append(f"{(item.name if item else k)}x{v}")
         return (
             f"{result['message']}\n"
-            f"消耗: {cost_str}\n"
+            f"消耗: {'  '.join(cost_parts)}\n"
             f"💡 使用「状态」查看你的建筑情况。"
         )
 
@@ -954,6 +1025,87 @@ class SurvivorPlugin(Star):
             f"💡 每1小时为1个游戏日，每日会自动结算消耗和产出。"
         )
 
+    def _cmd_llm_status(self) -> str:
+        """查看 LLM 事件生成状态"""
+        enabled = self.engine.llm_enabled
+        ratio = self.engine.llm_event_ratio
+        cache = llm_events.cache_size()
+
+        if not enabled:
+            return (
+                f"🤖 ===== LLM 事件生成 =====\n"
+                f"\n"
+                f"❌ 状态：已禁用\n"
+                f"\n"
+                f"📋 说明：插件启动时会自动检测 AstrBot 的大模型是否可用。\n"
+                f"   如果 AstrBot 能正常 AI 聊天，这里就能工作。\n"
+                f"   使用「llm开关」可手动启用/禁用。\n"
+                f"   使用「llm比例 [10-100]」调整 LLM 事件出现概率。"
+            )
+
+        return (
+            f"🤖 ===== LLM 事件生成 =====\n"
+            f"\n"
+            f"✅ 状态：已启用\n"
+            f"📊 替换比例：{int(ratio * 100)}%（探索时 {int(ratio * 100)}% 概率用大模型生成的事件，其余用内置事件）\n"
+            f"📦 缓存事件：{cache} 个（上限 {llm_events.MAX_CACHE_SIZE}，不足 {llm_events.REFILL_THRESHOLD} 时补充）\n"
+            f"🔄 每天自动补充一次，补满至 {llm_events.MAX_CACHE_SIZE} 个\n"
+            f"\n"
+            f"💡 使用「llm开关」禁用/启用\n"
+            f"💡 使用「llm比例 [10-100]」调整出现概率\n"
+            f"💡 LLM 事件更丰富多样，有 2 分钟调用冷却防止频繁请求"
+        )
+
+    def _cmd_llm_toggle(self) -> str:
+        """开关 LLM 事件生成"""
+        # 如果是关闭状态且想开启，需要检查是否有 provider
+        if not self.engine.llm_enabled:
+            self.engine.llm_enabled = True
+            return (
+                f"🤖 LLM 事件生成已 ✅ 启用\n"
+                f"   替换比例：{int(self.engine.llm_event_ratio * 100)}%\n"
+                f"   如果 AstrBot 未配置大模型，将自动降级为内置事件。"
+            )
+        else:
+            self.engine.llm_enabled = False
+            return (
+                f"🤖 LLM 事件生成已 ❌ 禁用\n"
+                f"   现在探索只会使用内置事件。\n"
+                f"   使用「llm开关」可重新启用。"
+            )
+
+    def _cmd_llm_ratio(self, ratio_str: str) -> str:
+        """设置 LLM 事件替换比例"""
+        if not ratio_str:
+            current = int(self.engine.llm_event_ratio * 100)
+            return (
+                f"🤖 当前 LLM 事件替换比例：{current}%\n"
+                f"   使用「llm比例 [10-100]」调整，例如「llm比例 50」"
+            )
+
+        try:
+            val = int(ratio_str)
+        except ValueError:
+            return "⚠️ 请输入有效数字，例如「llm比例 50」"
+
+        if val < 0 or val > 100:
+            return "⚠️ 比例范围 0-100，0 表示完全不使用 LLM 事件（等同于关闭）"
+
+        self.engine.llm_event_ratio = val / 100.0
+
+        if val == 0:
+            return (
+                f"🤖 LLM 事件替换比例已设为 0%\n"
+                f"   实际上等同于关闭 LLM 事件生成。\n"
+                f"   使用「llm开关」或设回大于 0 的值可重新启用。"
+            )
+
+        return (
+            f"🤖 LLM 事件替换比例已设为 {val}%\n"
+            f"   现在探索时有约 {val}% 概率使用大模型生成的事件。\n"
+            f"   建议范围 20-50%，太高会增加 API 调用频率。"
+        )
+
     def _cmd_help(self) -> str:
         """帮助信息"""
         return (
@@ -1000,6 +1152,12 @@ class SurvivorPlugin(Star):
             f"🌤️ 天气系统：\n"
             f"  · 天气 - 查看当前天气\n"
             f"  · 不同天气影响探索事件\n"
+            f"\n"
+            f"🤖 LLM 事件生成（需 AstrBot 已配置大模型）：\n"
+            f"  · LLM状态 - 查看 LLM 事件生成状态\n"
+            f"  · LLM开关 - 启用/禁用大模型事件\n"
+            f"  · LLM比例 [10-100] - 设置 LLM 事件出现概率\n"
+            f"  · 启用后约 35% 的探索事件由 AI 生成，每天补充 300 个\n"
             f"\n"
             f"📊 其他：\n"
             f"  · 排行榜 - 群内排行\n"
@@ -1238,6 +1396,88 @@ class SurvivorPlugin(Star):
                 f"反被造成了 {result['damage_taken']} 点伤害！\n"
                 f"{'💀 你已死亡！使用「重生」重新开始。' if result.get('attacker_died') else ''}"
             )
+
+    async def _init_llm_events(self):
+        """初始化 LLM 事件生成器：直接用 AstrBot 内置大模型尝试生成，成功则启用"""
+        if not self.context:
+            self.engine.llm_enabled = False
+            return
+
+        # 不手动检测 provider，让 AstrBot 自己决定用哪个 LLM
+        self.engine.llm_enabled = True
+        self.engine.llm_event_ratio = 0.35  # 35% 概率使用 LLM 事件
+
+        try:
+            logger.info("[Survivor] 正在检测大模型可用性...")
+        except NameError:
+            print("[Survivor] 正在检测大模型可用性...")
+
+        # 直接尝试生成一个事件来验证 LLM 是否可用
+        n = await self._refill_llm_events()
+        if n > 0:
+            try:
+                logger.info(f"[Survivor] 大模型事件生成已启用（占比 35%），缓存 {llm_events.cache_size()} 个事件")
+            except NameError:
+                print(f"[Survivor] 大模型事件生成已启用（占比 35%），缓存 {llm_events.cache_size()} 个事件")
+            # 启动后台定期补充
+            asyncio.create_task(self._llm_refill_loop())
+        else:
+            self.engine.llm_enabled = False
+            try:
+                logger.info("[Survivor] 大模型不可用，事件生成已降级为内置事件。如已配置 LLM，请检查 AstrBot 设置。")
+            except NameError:
+                print("[Survivor] 大模型不可用，事件生成已降级为内置事件。如已配置 LLM，请检查 AstrBot 设置。")
+
+    async def _refill_llm_events(self):
+        """补充 LLM 事件缓存，每次补到 MAX_CACHE_SIZE（300）"""
+        if not self.engine.llm_enabled or not self.context:
+            return 0
+
+        current = llm_events.cache_size()
+        if current >= llm_events.MAX_CACHE_SIZE:
+            return 0
+
+        # 获取一个群组的状态作为背景
+        groups = self.engine._groups
+        if groups:
+            group_id = next(iter(groups))
+            group = groups[group_id]
+        else:
+            # 没有群组时使用默认状态
+            from models import GroupGameState
+            group = GroupGameState(group_id="default")
+
+        total_added = 0
+        # 循环生成直到缓存满或失败
+        while llm_events.cache_size() < llm_events.MAX_CACHE_SIZE:
+            n = await llm_events.generate_batch(
+                self.context,
+                season=group.current_season,
+                weather=group.weather,
+                danger_level=group.danger_level,
+                day=group.current_day,
+            )
+            if n <= 0:
+                break  # LLM 调用失败则停止
+            total_added += n
+            # 批次间短暂间隔，避免频繁请求
+            await asyncio.sleep(3)
+
+        if total_added > 0:
+            try:
+                logger.info(f"[Survivor] LLM 补充了 {total_added} 个事件，缓存总数: {llm_events.cache_size()}")
+            except NameError:
+                print(f"[Survivor] LLM 补充了 {total_added} 个事件，缓存总数: {llm_events.cache_size()}")
+
+        return total_added
+
+    async def _llm_refill_loop(self):
+        """后台循环：每 24 小时补充一次 LLM 事件缓存到 300 个"""
+        while self.engine.llm_enabled:
+            await asyncio.sleep(86400)  # 每 24 小时（一天）检查一次
+            if not self.engine.llm_enabled:
+                break
+            await self._refill_llm_events()
 
     # ================================================================
     # 定时任务

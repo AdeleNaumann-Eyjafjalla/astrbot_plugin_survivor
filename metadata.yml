@@ -1,6 +1,6 @@
 name: astrbot_plugin_survivor
 display_name: 末日生存
-desc: 末日生存文字游戏插件 - 全自动搜集式QQ群文字游戏 v2.5
+desc: 末日生存文字游戏插件 v2.5 - 支持大模型生成随机探索事件（需 AstrBot 已配置 LLM）
 version: v2.5.0
 author: AdeleNaumann
 repo: https://github.com/AdeleNaumann-Eyjafjalla/astrbot_plugin_survivor
