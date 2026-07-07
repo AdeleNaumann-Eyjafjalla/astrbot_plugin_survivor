@@ -158,9 +158,9 @@ class SurvivorPlugin(Star):
 
         # 插件元数据（AstrBot Star 系统通过属性读取）
         self.name = "astrbot_plugin_survivor"
-        self.desc = "末日生存文字游戏 v2.5 - 支持大模型生成随机事件"
-        self.author = "AdeleNaumann"
-        self.version = "v2.5.0"
+self.desc = "末日生存文字游戏 v2.6 - 基础资源可合成、配方按分类展示、材料支持资源池消耗"
+self.author = "AdeleNaumann"
+self.version = "v2.6.0"
 
         # 线程安全锁（保护定时器线程与主线程的数据读写）
         self._data_lock = threading.RLock()
@@ -964,12 +964,13 @@ class SurvivorPlugin(Star):
         """查看合成配方"""
         lines = ["🔨 ===== 合成配方 =====", ""]
 
-        # 按产出分类分组
+        # 按产出分类分组（兼容旧版 ItemCategory 无 RESOURCE 的情况）
+        _resource_cat = getattr(ItemCategory, "RESOURCE", None)
         category_order = [
             (ItemCategory.WEAPON, "⚔️ 武器"),
             (ItemCategory.ARMOR, "🛡️ 防具"),
             (ItemCategory.CONSUMABLE, "🍖 消耗品"),
-            (ItemCategory.RESOURCE, "⛏️ 基础资源"),
+            (_resource_cat, "⛏️ 基础资源"),
             (ItemCategory.MATERIAL, "🔧 材料/工具"),
             (ItemCategory.SPECIAL, "📦 特殊"),
         ]
@@ -983,6 +984,8 @@ class SurvivorPlugin(Star):
 
         # 按顺序输出
         for cat, label in category_order:
+            if cat is None:
+                continue
             recipes_in_cat = grouped.pop(cat, [])
             if not recipes_in_cat:
                 continue

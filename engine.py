@@ -585,7 +585,7 @@ class SurvivorEngine:
                 player.resources[mat_id] = player.resources.get(mat_id, 0) - (needed - inv_have)
 
         # 获得成品：资源类产出写入资源池，普通物品写入背包
-        if item_def and item_def.category == ItemCategory.RESOURCE:
+        if item_def and getattr(item_def, "category", None) and item_def.category.value == "resource":
             player.resources[item_id] = player.resources.get(item_id, 0) + count
         else:
             player.add_item(item_id, count)
