@@ -502,6 +502,23 @@ class SurvivorEngine:
                     "message": f"⚠️ 需要 {bld_def.name} Lv.{recipe['min_level']} 才能合成此物品。"
                 }
 
+        # 检查资源消耗
+        resource_costs = recipe.get("resource_costs", {})
+        for res_key, res_amount in resource_costs.items():
+            needed = res_amount * count
+            current = player.resources.get(res_key, 0)
+            if current < needed:
+                res_names = {
+                    "food": "食物", "water": "水", "wood": "木材",
+                    "stone": "石料", "iron": "铁", "medicine": "药品",
+                    "ammo": "弹药", "fuel": "燃料",
+                }
+                res_name = res_names.get(res_key, res_key)
+                return {
+                    "type": "error",
+                    "message": f"⚠️ 资源不足！需要 {res_name}x{needed}，当前仅有 {current}。"
+                }
+
         # 检查材料
         materials = recipe["materials"]
         for mat_id, mat_amount in materials.items():
@@ -513,6 +530,10 @@ class SurvivorEngine:
                     "type": "error",
                     "message": f"⚠️ 材料不足！需要 {needed} 个{mat_name}。"
                 }
+
+        # 消耗资源
+        for res_key, res_amount in resource_costs.items():
+            player.resources[res_key] -= res_amount * count
 
         # 消耗材料
         for mat_id, mat_amount in materials.items():

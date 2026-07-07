@@ -123,14 +123,18 @@ class RecipeRegistry:
     @classmethod
     def register(cls, result_item_id: str, materials: Dict[str, int],
                  description: str = "", required_building: Optional[str] = None,
-                 min_level: int = 1):
-        """注册合成配方"""
+                 min_level: int = 1, resource_costs: Optional[Dict[str, int]] = None):
+        """注册合成配方。
+        materials: 需要消耗的物品 {item_id: count}
+        resource_costs: 需要消耗的资源 {resource_type: count}
+        """
         cls._recipes[result_item_id] = {
             "result": result_item_id,
             "materials": materials,
             "description": description,
             "required_building": required_building,
             "min_level": min_level,
+            "resource_costs": resource_costs or {},
         }
 
     @classmethod
@@ -1738,6 +1742,34 @@ def init_default_recipes():
     RecipeRegistry.register(
         "antidote", {"medicine": 3, "herb": 3},
         description="制作解毒剂", required_building="workshop", min_level=2
+    )
+    # 基础生存物品
+    RecipeRegistry.register(
+        "bottled_water", {"herb": 2, "plastic": 1},
+        resource_costs={"water": 5},
+        description="消耗水资源，用草药过滤、塑料瓶盛装，制作可饮用的瓶装水"
+    )
+    RecipeRegistry.register(
+        "canned_food", {"scrap_metal": 2, "herb": 2, "cloth": 1},
+        resource_costs={"food": 5},
+        description="消耗食物资源，用金属片封装保存"
+    )
+    # 基础工具
+    RecipeRegistry.register(
+        "rusty_knife", {"scrap_metal": 3, "cloth": 1},
+        description="打磨金属片，缠上布条做握柄，制作简易小刀"
+    )
+    RecipeRegistry.register(
+        "rope", {"cloth": 3},
+        description="将布料撕成条，编织成绳索"
+    )
+    RecipeRegistry.register(
+        "military_vest", {"iron": 5, "leather": 5, "cloth": 3},
+        description="用金属板和皮革制作军用防弹衣", required_building="workshop", min_level=3
+    )
+    RecipeRegistry.register(
+        "mre", {"canned_food": 2, "cloth": 1, "plastic": 1},
+        description="封装压缩食物，制作军用口粮", required_building="workshop", min_level=2
     )
 
 

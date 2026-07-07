@@ -878,6 +878,12 @@ class SurvivorPlugin(Star):
         """查看合成配方"""
         lines = ["🔨 ===== 合成配方 =====", ""]
 
+        res_names = {
+            "food": "食物", "water": "水", "wood": "木材",
+            "stone": "石料", "iron": "铁", "medicine": "药品",
+            "ammo": "弹药", "fuel": "燃料",
+        }
+
         for item_id, recipe in RecipeRegistry.get_all().items():
             item = ItemRegistry.get(item_id)
             item_name = item.name if item else item_id
@@ -886,6 +892,13 @@ class SurvivorPlugin(Star):
                 f"{ItemRegistry.get(mid).name if ItemRegistry.get(mid) else mid} x{amt}"
                 for mid, amt in recipe["materials"].items()
             )
+
+            # 资源消耗
+            res_parts = []
+            for res_key, res_amt in recipe.get("resource_costs", {}).items():
+                res_parts.append(f"{res_names.get(res_key, res_key)} x{res_amt}")
+            if res_parts:
+                mat_str = " + ".join(res_parts) + (" + " if mat_str else "") + mat_str
 
             req = ""
             if recipe.get("required_building"):
