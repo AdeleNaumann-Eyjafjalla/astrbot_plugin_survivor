@@ -23,10 +23,17 @@ if _plugin_dir not in sys.path:
     sys.path.insert(0, _plugin_dir)
 
 # 清除旧字节码缓存，防止新增枚举成员后热加载报错
+# 同时清除插件目录 + AstrBot 全局缓存中本插件的 pyc
 import shutil
-for root, dirs, files in os.walk(_plugin_dir):
-    if "__pycache__" in dirs:
-        shutil.rmtree(os.path.join(root, "__pycache__"), ignore_errors=True)
+_plugin_name = os.path.basename(_plugin_dir)
+for _base in [_plugin_dir]:
+    for root, dirs, files in os.walk(_base):
+        if "__pycache__" in dirs:
+            shutil.rmtree(os.path.join(root, "__pycache__"), ignore_errors=True)
+# 额外：清除 sys.modules 中本插件的旧缓存，强制重新加载
+for _mod in list(sys.modules.keys()):
+    if _mod.startswith(_plugin_name) or _mod in ("models", "engine", "content", "llm_events"):
+        sys.modules.pop(_mod, None)
 
 # AstrBot Star 基类 + 事件系统
 try:
