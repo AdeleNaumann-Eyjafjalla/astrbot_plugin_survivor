@@ -158,9 +158,9 @@ class SurvivorPlugin(Star):
 
         # 插件元数据（AstrBot Star 系统通过属性读取）
         self.name = "astrbot_plugin_survivor"
-self.desc = "末日生存文字游戏 v2.6 - 基础资源可合成、配方按分类展示、材料支持资源池消耗"
-self.author = "AdeleNaumann"
-self.version = "v2.6.0"
+        self.desc = "末日生存文字游戏 v2.6 - 基础资源可合成、配方按分类展示、材料支持资源池消耗"
+        self.author = "AdeleNaumann"
+        self.version = "v2.6.0"
 
         # 线程安全锁（保护定时器线程与主线程的数据读写）
         self._data_lock = threading.RLock()
