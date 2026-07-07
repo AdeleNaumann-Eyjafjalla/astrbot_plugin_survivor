@@ -964,35 +964,77 @@ class SurvivorPlugin(Star):
         """查看合成配方"""
         lines = ["🔨 ===== 合成配方 =====", ""]
 
-        res_names = {
-            "food": "食物", "water": "水", "wood": "木材",
-            "stone": "石料", "iron": "铁", "medicine": "药品",
-            "ammo": "弹药", "fuel": "燃料",
-        }
+        # 按产出分类分组
+        category_order = [
+            (ItemCategory.WEAPON, "⚔️ 武器"),
+            (ItemCategory.ARMOR, "🛡️ 防具"),
+            (ItemCategory.CONSUMABLE, "🍖 消耗品"),
+            (ItemCategory.RESOURCE, "⛏️ 基础资源"),
+            (ItemCategory.MATERIAL, "🔧 材料/工具"),
+            (ItemCategory.SPECIAL, "📦 特殊"),
+        ]
 
+        # 先按分类归组
+        grouped = {}
         for item_id, recipe in RecipeRegistry.get_all().items():
             item = ItemRegistry.get(item_id)
-            item_name = item.name if item else item_id
+            cat = item.category if item else ItemCategory.MATERIAL
+            grouped.setdefault(cat, []).append((item_id, recipe, item))
 
-            mat_str = " + ".join(
-                f"{ItemRegistry.get(mid).name if ItemRegistry.get(mid) else res_names.get(mid, mid)} x{amt}"
-                for mid, amt in recipe["materials"].items()
-            )
+        # 按顺序输出
+        for cat, label in category_order:
+            recipes_in_cat = grouped.pop(cat, [])
+            if not recipes_in_cat:
+                continue
+            lines.append(label)
+            lines.append("─" * 20)
+            for item_id, recipe, item in recipes_in_cat:
+                item_name = item.name if item else item_id
 
-            # 资源消耗
-            res_parts = []
-            for res_key, res_amt in recipe.get("resource_costs", {}).items():
-                res_parts.append(f"{res_names.get(res_key, res_key)} x{res_amt}")
-            if res_parts:
-                mat_str = " + ".join(res_parts) + (" + " if mat_str else "") + mat_str
+                # 材料文本
+                parts = []
+                # 资源消耗（resource_costs 用 ItemRegistry 获取中文名）
+                for res_key, res_amt in recipe.get("resource_costs", {}).items():
+                    res_item = ItemRegistry.get(res_key)
+                    parts.append(f"{res_item.name if res_item else res_key} x{res_amt}")
+                # 合成材料
+                for mid, amt in recipe["materials"].items():
+                    mat_item = ItemRegistry.get(mid)
+                    parts.append(f"{mat_item.name if mat_item else mid} x{amt}")
 
-            req = ""
-            if recipe.get("required_building"):
-                bld = BuildingRegistry.get(recipe["required_building"])
-                req = f" [需要{bld.name if bld else recipe['required_building']} Lv.{recipe['min_level']}]"
+                mat_str = " + ".join(parts)
 
-            lines.append(f"📌 {item_name}{req}")
-            lines.append(f"   材料: {mat_str}")
+                # 建筑要求
+                req = ""
+                if recipe.get("required_building"):
+                    bld = BuildingRegistry.get(recipe["required_building"])
+                    req = f" [需要{bld.name if bld else recipe['required_building']} Lv.{recipe['min_level']}]"
+
+                lines.append(f"  📌 {item_name}{req}")
+                lines.append(f"     材料: {mat_str}")
+            lines.append("")
+
+        # 兜底：未归类到上述分类的
+        if grouped:
+            lines.append("📦 其他")
+            lines.append("─" * 20)
+            for cat, recipes_in_cat in grouped.items():
+                for item_id, recipe, item in recipes_in_cat:
+                    item_name = item.name if item else item_id
+                    parts = []
+                    for res_key, res_amt in recipe.get("resource_costs", {}).items():
+                        res_item = ItemRegistry.get(res_key)
+                        parts.append(f"{res_item.name if res_item else res_key} x{res_amt}")
+                    for mid, amt in recipe["materials"].items():
+                        mat_item = ItemRegistry.get(mid)
+                        parts.append(f"{mat_item.name if mat_item else mid} x{amt}")
+                    mat_str = " + ".join(parts)
+                    req = ""
+                    if recipe.get("required_building"):
+                        bld = BuildingRegistry.get(recipe["required_building"])
+                        req = f" [需要{bld.name if bld else recipe['required_building']} Lv.{recipe['min_level']}]"
+                    lines.append(f"  📌 {item_name}{req}")
+                    lines.append(f"     材料: {mat_str}")
             lines.append("")
 
         lines.append("💡 使用「合成 [物品名] [数量]」来合成物品")
