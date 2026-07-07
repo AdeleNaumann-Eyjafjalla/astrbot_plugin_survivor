@@ -1449,15 +1449,19 @@ class SurvivorPlugin(Star):
             if result["target_died"]:
                 lines.append("")
                 lines.append(f"💀 {result['target_display']} 已死亡！")
+            if result.get("ammo_msg"):
+                lines.append("")
+                lines.append(result["ammo_msg"])
 
             return "\n".join(lines)
 
         else:
+            ammo_line = f"\n{result['ammo_msg']}\n" if result.get("ammo_msg") else ""
             return (
                 f"💥 ===== 偷袭失败！ =====\n"
                 f"\n"
                 f"你偷袭 {result['target_display']} 失败了！（胜率 {result['win_chance']:.0%}）\n"
-                f"反被造成了 {result['damage_taken']} 点伤害！\n"
+                f"反被造成了 {result['damage_taken']} 点伤害！{ammo_line}"
                 f"{'💀 你已死亡！使用「重生」重新开始。' if result.get('attacker_died') else ''}"
             )
 
