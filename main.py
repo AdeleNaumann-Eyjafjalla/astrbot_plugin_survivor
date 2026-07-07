@@ -961,16 +961,40 @@ class SurvivorPlugin(Star):
             f"💡 使用「状态」查看你的建筑情况。"
         )
 
+    # 硬编码中文名回退表（防御 ItemRegistry 缓存旧版导致查不到的情况）
+    _FALLBACK_NAMES = {
+        "wood": "木材", "stone": "石料", "iron": "铁",
+        "food": "食物", "water": "水", "medicine": "药品",
+        "ammo": "弹药", "fuel": "燃料",
+        "scrap_metal": "废金属", "cloth": "布料", "rope": "绳索",
+        "nails": "钉子", "glass": "玻璃", "electronics": "电子零件",
+        "gunpowder": "火药", "herb": "草药", "leather": "皮革",
+        "plastic": "塑料",
+        "bandage": "绷带", "bottled_water": "瓶装水", "canned_food": "罐头食品",
+        "rusty_knife": "生锈的小刀", "baseball_bat": "棒球棍",
+        "hunting_rifle": "猎枪", "fire_axe": "消防斧", "crossbow": "十字弩",
+        "leather_jacket": "皮夹克", "riot_shield": "防暴盾牌",
+        "first_aid_kit": "急救包", "stimpack": "兴奋剂", "antidote": "解毒剂",
+        "mre": "军用口粮", "military_vest": "军用防弹衣",
+        "flame_sword": "火焰剑",
+    }
+
+    @staticmethod
+    def _item_name(item_id: str) -> str:
+        """获取物品中文名，ItemRegistry 查不到时回退硬编码表"""
+        item = ItemRegistry.get(item_id)
+        if item:
+            return item.name
+        return SurvivorPlugin._FALLBACK_NAMES.get(item_id, item_id)
+
     def _format_recipe_entry(self, item_id, recipe, item):
         """格式化单条配方条目"""
-        item_name = item.name if item else item_id
+        item_name = item.name if item else self._item_name(item_id)
         parts = []
         for res_key, res_amt in recipe.get("resource_costs", {}).items():
-            ri = ItemRegistry.get(res_key)
-            parts.append(f"{ri.name if ri else res_key} ×{res_amt}")
+            parts.append(f"{self._item_name(res_key)} ×{res_amt}")
         for mid, amt in recipe["materials"].items():
-            mi = ItemRegistry.get(mid)
-            parts.append(f"{mi.name if mi else mid} ×{amt}")
+            parts.append(f"{self._item_name(mid)} ×{amt}")
         mat_str = " + ".join(parts)
         req = ""
         if recipe.get("required_building"):
