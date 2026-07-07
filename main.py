@@ -11,10 +11,16 @@ AstrBot 插件主类，负责：
 import re
 import json
 import os
+import sys
 import threading
 import time
 import traceback
 from typing import Tuple, Optional
+
+# 确保插件目录在 sys.path 中（解决 AstrBot 安装后导入失败的问题）
+_plugin_dir = os.path.dirname(os.path.abspath(__file__))
+if _plugin_dir not in sys.path:
+    sys.path.insert(0, _plugin_dir)
 
 # AstrBot 依赖
 try:
