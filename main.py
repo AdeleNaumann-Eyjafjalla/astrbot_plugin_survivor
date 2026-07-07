@@ -1284,7 +1284,7 @@ class SurvivorPlugin(Star):
     def _cmd_help(self) -> str:
         """帮助信息"""
         return (
-            f"🏚️ ===== 末日生存 v2.5 帮助 =====\n"
+            f"🏚️ ===== 末日生存 v2.6 帮助 =====\n"
             f"\n"
             f"🎮 基础操作：\n"
             f"  · 开始生存 [名字] [职业] - 创建角色\n"
