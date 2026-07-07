@@ -732,13 +732,48 @@ class SurvivorPlugin(Star):
         for building in BuildingRegistry.get_all():
             lines.append(f"📌 {building.name} (最高 Lv.{building.max_level})")
             lines.append(f"   {building.description}")
-            cost_str = " ".join(f"{k}x{v}" for k, v in building.build_cost.items())
-            lines.append(f"   建造消耗: {cost_str}")
-            lines.append(f"   效果: {building.effect_per_level}")
+
+            # 格式化建造消耗（区分资源和物品）
+            res_icons = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石头",
+                        "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
+            cost_parts = []
+            for k, v in building.build_cost.items():
+                if k in res_icons:
+                    cost_parts.append(f"{res_icons[k]}x{v}")
+                else:
+                    item = ItemRegistry.get(k)
+                    cost_parts.append(f"{(item.name if item else k)}x{v}")
+            lines.append(f"   建造消耗: {'  '.join(cost_parts)}")
+
+            # 格式化效果描述
+            effect_text = self._format_building_effect(building.effect_per_level)
+            lines.append(f"   每级效果: {effect_text}")
             lines.append("")
 
         lines.append("💡 使用「建造 [建筑名]」来建造或升级")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_building_effect(effects: dict) -> str:
+        """将建筑效果 dict 转为可读文本"""
+        mapping = {
+            "defense": "防御+{v}",
+            "max_health": "生命上限+{v}",
+            "food_per_day": "每日食物+{v}",
+            "water_per_day": "每日净水+{v}",
+            "craft_speed": "制作速度+{p}%",
+            "scout_range": "侦查范围+{v}",
+            "storage_bonus": "存储上限+{v}",
+            "heal_per_day": "每日治疗+{v}",
+            "ammo_per_day": "每日弹药+{v}",
+        }
+        parts = []
+        for k, v in effects.items():
+            fmt = mapping.get(k, "{k}+{v}")
+            text = fmt.replace("{k}", k).replace("{v}", str(int(v)) if v == int(v) else str(v))
+            text = text.replace("{p}", str(int(v * 100)) if v < 1 else str(int(v)))
+            parts.append(text)
+        return "，".join(parts) if parts else "无"
 
     def _cmd_build(self, user_id: str, group_id: str, building_name: str) -> str:
         """建造建筑"""
