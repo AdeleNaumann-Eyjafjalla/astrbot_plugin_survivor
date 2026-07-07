@@ -980,7 +980,14 @@ class SurvivorPlugin(Star):
 
     def _cmd_recipe_list(self) -> str:
         """查看合成配方"""
-        lines = ["🔨 ===== 合成配方 =====", ""]
+        # 诊断：输出已注册数量，方便确认代码版本
+        recipe_count = len(RecipeRegistry.get_all())
+        item_count = len(ItemRegistry.get_all())
+        res_items = [i for i in ItemRegistry.get_all() if getattr(i, 'category', None) and str(i.category.value) == 'resource']
+        lines = [
+            f"🔨 ===== 合成配方 (注册配方:{recipe_count}, 物品:{item_count}, 资源项:{len(res_items)}) =====",
+            ""
+        ]
 
         # 手动维护：基础生存物品（不需要工坊即可合成的日常补给）
         survival_ids = {"bottled_water", "canned_food", "rusty_knife", "rope"}
