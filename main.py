@@ -118,7 +118,7 @@ class SurvivorPlugin(Star):
     末日生存游戏插件
 
     指令列表：
-    - 开始生存 / 创建角色 [职业]    开始游戏
+    - 开始生存 [名字] [职业]         开始游戏（必须选择职业）
     - 探索 / 行动                   执行一次探索行动
     - 选择 [1-4]                    选择事件选项
     - 状态 / 我的状态                查看当前状态
@@ -149,6 +149,9 @@ class SurvivorPlugin(Star):
         self.desc = "末日生存文字游戏 v2.5 - 支持大模型生成随机事件"
         self.author = "AdeleNaumann"
         self.version = "v2.5.0"
+
+        # 线程安全锁（保护定时器线程与主线程的数据读写）
+        self._data_lock = threading.RLock()
 
         # 确保数据目录存在
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -241,7 +244,7 @@ class SurvivorPlugin(Star):
     # @filter.command 指令处理 —— 每个游戏指令独立注册
     # ================================================================
 
-    @filter.command(CMD_START, "开始生存，创建角色")
+    @filter.command(CMD_START, "开始生存，创建角色（必须选择职业）")
     async def handle_start(self, event: AstrMessageEvent):
         user_id = str(event.get_sender_id())
         group_id = str(event.get_group_id())
@@ -346,7 +349,7 @@ class SurvivorPlugin(Star):
         if not item_name:
             result = "⚠️ 请输入「装备 [物品名]」"
         else:
-            result = self._cmd_use_item(user_id, group_id, item_name)
+            result = self._cmd_equip_item(user_id, group_id, item_name)
         event.stop_event()
         yield event.plain_result(result)
 
@@ -522,11 +525,28 @@ class SurvivorPlugin(Star):
                 f"🏚️ ===== 末日生存 =====\n"
                 f"欢迎来到末日世界，幸存者！\n"
                 f"\n"
-                f"⚠️ 请使用「开始生存 [名字]」来创建角色\n"
-                f"💡 也可以加上职业：「开始生存 [名字] [职业]」\n"
+                f"⚠️ 请使用「开始生存 [名字] [职业]」来创建角色\n"
                 f"💡 使用「职业列表」查看可选职业\n"
                 f"\n"
-                f"⚠️ 名字和职业一旦确定将无法更改！"
+                f"⚠️ 名字和职业一旦确定将无法更改！\n"
+                f"⚠️ 必须选择一个职业才能开始生存！"
+            )
+
+        # 必须选职业
+        if not player_class:
+            classes = ClassRegistry.get_all()
+            class_list = "\n".join(
+                f"  • {c['name']}（{c['id']}）：{c.get('description', '')}"
+                for c in classes.values()
+            )
+            return (
+                f"⚠️ 必须选择一个职业才能开始生存！\n"
+                f"\n"
+                f"可选职业：\n"
+                f"{class_list}\n"
+                f"\n"
+                f"请使用「开始生存 {custom_name} [职业]」重新开始\n"
+                f"例如：「开始生存 {custom_name} 拾荒者」"
             )
 
         return self._create_new_player(user_id, group_id, custom_name, player_class)
@@ -583,7 +603,7 @@ class SurvivorPlugin(Star):
         """探索行动"""
         player = self.engine.get_player(user_id, group_id)
         if not player:
-            return "⚠️ 你还没有开始生存！请先使用「开始生存」创建角色。"
+            return "⚠️ 你还没有开始生存！请先使用「开始生存 [名字] [职业]」创建角色。"
 
         can_act, reason = self.engine.can_act(player)
         if not can_act:
@@ -698,13 +718,16 @@ class SurvivorPlugin(Star):
             lines.append(f"")
             lines.append(f"💀 你死了...使用「重生」重新开始。")
 
+        # 有实质性数据变更后保存
+        self._save_data()
+
         return "\n".join(lines)
 
     def _cmd_status(self, user_id: str, group_id: str) -> str:
         """查看状态"""
         player = self.engine.get_player(user_id, group_id)
         if not player:
-            return "⚠️ 你还没有开始生存！请先使用「开始生存」创建角色。"
+            return "⚠️ 你还没有开始生存！请先使用「开始生存 [名字] [职业]」创建角色。"
 
         group = self.engine.get_group(group_id)
 
@@ -720,10 +743,24 @@ class SurvivorPlugin(Star):
             if cls_data:
                 class_info = f"👤 职业: {cls_data['name']}\n"
 
+        # 离线升级通知
+        offline_level_notice = ""
+        if player.unread_level_ups > 0:
+            offline_level_notice = (
+                f"🎉 离线期间自动搜集升级了 {player.unread_level_ups} 次！"
+                f"当前 Lv.{player.level}，获得 {player.unread_level_ups * 2} 个技能点。\n"
+            )
+            player.unread_level_ups = 0
+
         lines = [
             f"{emoji} ===== {player.nickname or '幸存者'}{title_str} 的状态 =====",
             f"",
             class_info,
+        ]
+        if offline_level_notice:
+            lines.append(offline_level_notice)
+            lines.append("")
+        lines.extend([
             f"📊 等级: Lv.{player.level} | 经验: {player.exp}/{player.level * 100}",
             f"⭐ 技能点: {player.skill_points}",
             f"❤️ 生命: {player.health}/{player.max_health}",
@@ -888,6 +925,8 @@ class SurvivorPlugin(Star):
         if result["type"] == "error":
             return result["message"]
 
+        self._save_data()
+
         # 展示消耗
         res_icons = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石头",
                     "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
@@ -960,6 +999,8 @@ class SurvivorPlugin(Star):
             return f"⚠️ 未找到可合成的物品「{item_name}」。使用「配方」查看合成列表。"
 
         result = self.engine.craft_item(player, item_id, count)
+        if result.get("type") == "success":
+            self._save_data()
         return result["message"]
 
     def _cmd_use_item(self, user_id: str, group_id: str, item_name: str) -> str:
@@ -982,11 +1023,37 @@ class SurvivorPlugin(Star):
         result = self.engine.use_item(player, item_id)
         return result["message"]
 
+    def _cmd_equip_item(self, user_id: str, group_id: str, item_name: str) -> str:
+        """装备武器或防具（只允许武器和防具类别）"""
+        player = self.engine.get_player(user_id, group_id)
+        if not player or not player.is_alive():
+            return "⚠️ 你还没有开始生存或已死亡！"
+
+        # 模糊匹配
+        item_id = None
+        for iid, count in player.inventory.items():
+            item = ItemRegistry.get(iid)
+            if item and (item.name == item_name or item.id == item_name):
+                item_id = iid
+                break
+
+        if not item_id:
+            return f"⚠️ 背包中没有「{item_name}」。"
+
+        item = ItemRegistry.get(item_id)
+        if item and item.category not in (ItemCategory.WEAPON, ItemCategory.ARMOR):
+            return f"⚠️ 「{item.name}」不是武器或防具，无法装备。请使用「使用 [物品名]」来使用消耗品。"
+
+        result = self.engine.use_item(player, item_id)
+        if result.get("type") == "success":
+            self._save_data()
+        return result["message"]
+
     def _cmd_leaderboard(self, group_id: str) -> str:
         """查看排行榜"""
         players = self.engine._players.get(group_id, {})
         if not players:
-            return "📊 本群还没有幸存者！使用「开始生存」加入吧。"
+            return "📊 本群还没有幸存者！使用「开始生存 [名字] [职业]」加入吧。"
 
         # 按存活天数排序
         alive = [(uid, p) for uid, p in players.items() if p.is_alive()]
@@ -1041,7 +1108,7 @@ class SurvivorPlugin(Star):
         """查看世界状态"""
         group = self.engine.get_group(group_id)
         if not group:
-            return "🌍 这个世界还没有幸存者...使用「开始生存」创造历史吧！"
+            return "🌍 这个世界还没有幸存者...使用「开始生存 [名字] [职业]」创造历史吧！"
 
         player_count = len(self.engine._players.get(group_id, {}))
         alive_count = sum(1 for p in self.engine._players.get(group_id, {}).values() if p.is_alive())
@@ -1424,6 +1491,9 @@ class SurvivorPlugin(Star):
         # 执行 PvP
         result = self.engine.execute_pvp(attacker, target, group_id)
 
+        # PvP 修改了双方数据，立即保存
+        self._save_data()
+
         if result["type"] == "win":
             lines = [
                 f"⚔️ ===== 偷袭成功！ =====",
@@ -1568,13 +1638,14 @@ class SurvivorPlugin(Star):
 
     def _daily_tick_all(self):
         """对所有群组执行每日结算"""
-        for group_id in list(self.engine._groups.keys()):
-            try:
-                self.engine.daily_tick(group_id)
-            except Exception as e:
-                print(f"[Survivor] 群 {group_id} 每日结算失败: {e}")
+        with self._data_lock:
+            for group_id in list(self.engine._groups.keys()):
+                try:
+                    self.engine.daily_tick(group_id)
+                except Exception as e:
+                    print(f"[Survivor] 群 {group_id} 每日结算失败: {e}")
 
-        self._save_data()
+            self._save_data_nolock()
 
     # ================================================================
     # 数据持久化
@@ -1591,8 +1662,8 @@ class SurvivorPlugin(Star):
         except Exception as e:
             print(f"[Survivor] 加载存档失败: {e}")
 
-    def _save_data(self):
-        """保存存档"""
+    def _save_data_nolock(self):
+        """保存存档（调用者必须持有 self._data_lock）"""
         try:
             data = self.engine.export_data()
             with open(SAVE_FILE, 'w', encoding='utf-8') as f:
@@ -1600,10 +1671,10 @@ class SurvivorPlugin(Star):
         except Exception as e:
             print(f"[Survivor] 保存存档失败: {e}")
 
-    def __del__(self):
-        """析构时保存数据"""
-        self._daily_timer_running = False
-        self._save_data()
+    def _save_data(self):
+        """保存存档（带锁，线程安全）"""
+        with self._data_lock:
+            self._save_data_nolock()
 
     # ================================================================
     # 生命周期

@@ -244,6 +244,12 @@ class PlayerState:
     active_title: Optional[str] = None   # 当前佩戴的称号
     unlocked_titles: List[str] = field(default_factory=list)         # 已解锁称号列表
 
+    # 建造计数（实际建造次数，非等级之和）
+    total_builds: int = 0
+
+    # 离线期间未读的升级次数（每日自动搜集中升级）
+    unread_level_ups: int = 0
+
     # PvP 相关
     pvp_shield_until: float = 0.0          # PvP 保护截止时间戳
     pvp_cooldown_until: float = 0.0        # 偷袭冷却截止时间戳
@@ -376,6 +382,8 @@ class PlayerState:
             "unlocked_achievements": self.unlocked_achievements,
             "active_title": self.active_title,
             "unlocked_titles": self.unlocked_titles,
+            "total_builds": self.total_builds,
+            "unread_level_ups": self.unread_level_ups,
             "pvp_shield_until": self.pvp_shield_until,
             "pvp_cooldown_until": self.pvp_cooldown_until,
             "last_attacked_by": self.last_attacked_by,

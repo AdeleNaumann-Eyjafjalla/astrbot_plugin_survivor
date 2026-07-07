@@ -444,32 +444,50 @@ class SurvivorEngine:
 
         # 首次建造用 build_cost，升级用 get_upgrade_cost
         if current_level == 0:
-            cost = building_def.build_cost
+            cost = building_def.build_cost.copy()
         else:
             cost = temp_building.get_upgrade_cost()
 
-        # 检查资源
+        # 工程师职业：建造折扣
+        if player.player_class == "engineer":
+            class_data = ClassRegistry.get("engineer")
+            if class_data and "build_discount" in class_data.get("bonuses", {}):
+                discount = class_data["bonuses"]["build_discount"]
+                cost = {k: max(1, int(v * (1 - discount))) for k, v in cost.items()}
+
+        # 检查资源和物品消耗
         res_names = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石料",
                     "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
-        for res, amount in cost.items():
-            if player.get_resource(res) < amount:
-                res_label = res_names.get(res, res)
-                # 也可能是物品消耗，尝试查物品名
-                item = ItemRegistry.get(res)
-                if item:
-                    res_label = item.name
-                return {
-                    "type": "error",
-                    "message": f"⚠️ 资源不足！需要 {amount} {res_label}，你只有 {player.get_resource(res)}。"
-                }
+        for cost_id, amount in cost.items():
+            item = ItemRegistry.get(cost_id)
+            if item:
+                # 这是物品消耗，检查背包
+                if not player.has_item(cost_id, amount):
+                    return {
+                        "type": "error",
+                        "message": f"⚠️ 材料不足！需要 {item.name} x{amount}，背包中数量不足。"
+                    }
+            else:
+                # 这是资源消耗
+                if player.get_resource(cost_id) < amount:
+                    res_label = res_names.get(cost_id, cost_id)
+                    return {
+                        "type": "error",
+                        "message": f"⚠️ 资源不足！需要 {amount} {res_label}，你只有 {player.get_resource(cost_id)}。"
+                    }
 
-        # 消耗资源
-        for res, amount in cost.items():
-            player.consume_resource(res, amount)
+        # 消耗资源和物品
+        for cost_id, amount in cost.items():
+            item = ItemRegistry.get(cost_id)
+            if item:
+                player.remove_item(cost_id, amount)
+            else:
+                player.consume_resource(cost_id, amount)
 
         # 升级
         new_level = current_level + 1
         player.buildings[building_id] = new_level
+        player.total_builds += 1
 
         return {
             "type": "success",
@@ -502,8 +520,26 @@ class SurvivorEngine:
                     "message": f"⚠️ 需要 {bld_def.name} Lv.{recipe['min_level']} 才能合成此物品。"
                 }
 
+        # 工程师职业：合成折扣
+        craft_discount = 0.0
+        if player.player_class == "engineer":
+            class_data = ClassRegistry.get("engineer")
+            if class_data and "craft_discount" in class_data.get("bonuses", {}):
+                craft_discount = class_data["bonuses"]["craft_discount"]
+
+        # 复制材料（应用折扣）
+        materials = {
+            k: max(1, int(v * (1 - craft_discount)))
+            for k, v in recipe["materials"].items()
+        }
+
+        # 复制资源消耗（应用折扣）
+        resource_costs = {
+            k: max(1, int(v * (1 - craft_discount)))
+            for k, v in recipe.get("resource_costs", {}).items()
+        }
+
         # 检查资源消耗
-        resource_costs = recipe.get("resource_costs", {})
         for res_key, res_amount in resource_costs.items():
             needed = res_amount * count
             current = player.resources.get(res_key, 0)
@@ -520,7 +556,6 @@ class SurvivorEngine:
                 }
 
         # 检查材料
-        materials = recipe["materials"]
         for mat_id, mat_amount in materials.items():
             needed = mat_amount * count
             if not player.has_item(mat_id, needed):
@@ -545,9 +580,10 @@ class SurvivorEngine:
         player.stats["items_crafted"] += count
 
         item_name = item_def.name if item_def else item_id
+        discount_note = "（工程师折扣已应用）" if craft_discount > 0 else ""
         return {
             "type": "success",
-            "message": f"🔨 成功制作了 {count} 个 {item_name}！",
+            "message": f"🔨 成功制作了 {count} 个 {item_name}！{discount_note}",
             "item_name": item_name,
             "count": count,
         }
@@ -919,6 +955,7 @@ class SurvivorEngine:
 
     def _auto_gather(self, player: PlayerState):
         """每游戏天自动搜集资源，直接入账。所有存活玩家自动获得。"""
+        old_level = player.level
         base = {"food": 4, "water": 3, "wood": 2, "stone": 1}
 
         level_bonus = 1.0 + (player.level // 5) * 0.2
@@ -953,6 +990,10 @@ class SurvivorEngine:
         if random.random() < 0.15:
             player.exp += random.randint(5, 15 + player.level * 2)
             self._check_level_up(player)
+
+        # 记录离线升级次数
+        if player.level > old_level:
+            player.unread_level_ups += (player.level - old_level)
 
         if player.health < player.max_health:
             heal = 1 + (player.level // 10)
@@ -1073,7 +1114,7 @@ class SurvivorEngine:
                 "total_actions": player.total_actions,
                 "pvp_wins": player.pvp_wins,
                 "pvp_losses": player.pvp_losses,
-                "total_builds": sum(player.buildings.values()),
+                "total_builds": player.total_builds,
             }
             return bool(eval(condition, {"__builtins__": {}}, safe_dict))
         except Exception:
@@ -1208,6 +1249,9 @@ class SurvivorEngine:
             attacker.pvp_wins += 1
             target.pvp_losses += 1
             attacker.exp += random.randint(30, 80)
+
+            # 检查攻击者升级
+            self._check_level_up(attacker)
 
             # 检查目标是否死亡
             if target.health <= 0:
