@@ -27,6 +27,7 @@ try:
     from astrbot.api.star import Context, Star
     from astrbot.api.event import filter, AstrMessageEvent
     from astrbot.api import logger, AstrBotConfig
+    from astrbot.api.message_components import At
 except ImportError:
     # 开发环境 mock
     class Star:
@@ -34,6 +35,7 @@ except ImportError:
             pass
     Context = None
     AstrBotConfig = dict
+    At = None
 
     class AstrMessageEvent:
         message_str = ""
@@ -45,6 +47,8 @@ except ImportError:
             class PlainResult:
                 def __init__(self, text): self.text = text
             return PlainResult(text)
+        def get_messages(self): return []  # 消息链，开发环境为空
+        message_obj = None  # 结构化消息对象
 
     class filter:
         class EventMessageType:
@@ -404,11 +408,21 @@ class SurvivorPlugin(Star):
     async def handle_pvp(self, event: AstrMessageEvent):
         user_id = str(event.get_sender_id())
         group_id = str(event.get_group_id())
-        target_info = (event.message_str or "").replace("偷袭", "", 1).strip()
-        if not target_info:
-            result = "⚠️ 请输入「偷袭 [玩家名/QQ号]」"
+        # 优先从 @mention 提取目标 QQ 号
+        at_qq = self._extract_at_target(event)
+        if at_qq:
+            # 排除@自己的情况（需要从 message_str 回退）
+            if at_qq == user_id:
+                result = "⚠️ 你不能偷袭自己！"
+            else:
+                result = self._cmd_pvp(user_id, group_id, at_qq)
         else:
-            result = self._cmd_pvp(user_id, group_id, target_info)
+            # 未 @ 任何人，从文本中提取目标
+            target_info = (event.message_str or "").replace("偷袭", "", 1).strip()
+            if not target_info:
+                result = "⚠️ 请输入「偷袭 [玩家名/QQ号]」或直接 @ 对方，例如「偷袭 @某人」"
+            else:
+                result = self._cmd_pvp(user_id, group_id, target_info)
         event.stop_event()
         yield event.plain_result(result)
 
@@ -1183,7 +1197,7 @@ class SurvivorPlugin(Star):
             f"  · 佩戴称号 [称号] - 佩戴称号\n"
             f"\n"
             f"⚔️ PvP系统：\n"
-            f"  · 偷袭 [玩家名/QQ号] - 偷袭其他玩家\n"
+            f"  · 偷袭 [玩家名/QQ号] - 偷袭其他玩家（支持 @对方）\n"
             f"  · 胜利可抢夺对方资源和物品\n"
             f"  · 冷却10分钟，新手保护2小时\n"
             f"\n"
@@ -1363,6 +1377,18 @@ class SurvivorPlugin(Star):
 
         result = self.engine.set_title(player, title)
         return result["message"]
+
+    def _extract_at_target(self, event):
+        """从消息事件中提取 @mention 的第一个目标 QQ 号。未 @ 任何人时返回 None。"""
+        try:
+            messages = event.get_messages()
+        except Exception:
+            # 非 AstrBot 环境（开发/测试）容错
+            return None
+        for comp in messages:
+            if At is not None and isinstance(comp, At):
+                return str(comp.qq)
+        return None
 
     def _cmd_pvp(self, user_id: str, group_id: str, target_info: str, ame=None) -> str:
         """PvP 偷袭"""
