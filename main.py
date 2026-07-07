@@ -173,10 +173,8 @@ class SurvivorPlugin(Star):
         # 旧数据迁移：如果旧位置有存档而新位置没有，则复制过来
         self._migrate_old_save()
 
-        # 初始化游戏内容（先走标准流程）
+        # 初始化游戏内容
         init_all_content()
-        # 强制补齐缺失内容（防御旧版 content.py 被缓存导致新配方/RESOURCE丢失）
-        self._ensure_new_content()
 
         # 创建游戏引擎
         self.engine = SurvivorEngine()
@@ -963,75 +961,11 @@ class SurvivorPlugin(Star):
             f"💡 使用「状态」查看你的建筑情况。"
         )
 
-    # 硬编码中文名回退表（防御 ItemRegistry 缓存旧版导致查不到的情况）
-    _FALLBACK_NAMES = {
-        "wood": "木材", "stone": "石料", "iron": "铁",
-        "food": "食物", "water": "水", "medicine": "药品",
-        "ammo": "弹药", "fuel": "燃料",
-        "scrap_metal": "废金属", "cloth": "布料", "rope": "绳索",
-        "nails": "钉子", "glass": "玻璃", "electronics": "电子零件",
-        "gunpowder": "火药", "herb": "草药", "leather": "皮革",
-        "plastic": "塑料",
-        "bandage": "绷带", "bottled_water": "瓶装水", "canned_food": "罐头食品",
-        "rusty_knife": "生锈的小刀", "baseball_bat": "棒球棍",
-        "hunting_rifle": "猎枪", "fire_axe": "消防斧", "crossbow": "十字弩",
-        "leather_jacket": "皮夹克", "riot_shield": "防暴盾牌",
-        "first_aid_kit": "急救包", "stimpack": "兴奋剂", "antidote": "解毒剂",
-        "mre": "军用口粮", "military_vest": "军用防弹衣",
-        "flame_sword": "火焰剑",
-    }
-
     @staticmethod
     def _item_name(item_id: str) -> str:
-        """获取物品中文名，ItemRegistry 查不到时回退硬编码表"""
+        """获取物品中文名"""
         item = ItemRegistry.get(item_id)
-        if item:
-            return item.name
-        return SurvivorPlugin._FALLBACK_NAMES.get(item_id, item_id)
-
-    @staticmethod
-    def _ensure_new_content():
-        """强制补齐缺失内容：防御旧版 content.py 被 Python 运行时缓存导致新配方/RESOURCE 丢失。
-        所有注册操作都是幂等的（重复注册会覆盖），不会产生副作用。"""
-        _res_cat = getattr(ItemCategory, "RESOURCE", None) or ItemCategory.MATERIAL
-
-        # --- 补齐 RESOURCE 分类物品（旧版没有这 8 个 Item 注册） ---
-        _resource_specs = [
-            ("food", "食物", "基础食物资源，维持饱食度"),
-            ("water", "水", "基础水资源，维持口渴度"),
-            ("wood", "木材", "基础建材，建造和合成的必需品"),
-            ("stone", "石料", "基础石料，用于建造防御设施"),
-            ("iron", "铁", "金属资源，制作高级武器和防具"),
-            ("medicine", "药品", "医疗资源，制作药物和治疗伤病"),
-            ("ammo", "弹药", "弹药资源，远程武器的消耗品"),
-            ("fuel", "燃料", "燃料资源，驱动设备和熔炼金属"),
-        ]
-        for rid, rname, rdesc in _resource_specs:
-            if ItemRegistry.get(rid) is None:
-                ItemRegistry.register(Item(id=rid, name=rname, category=_res_cat, description=rdesc, rarity="common"))
-
-        # --- 补齐缺失配方（旧版只有 10 个，这里补上另外 10 个） ---
-        _missing_recipes = [
-            # (result_id, materials_dict, description, required_building, min_level)
-            ("bottled_water", {"herb": 2, "plastic": 1, "water": 3}, "用塑料瓶盛装、草药净化，制作可饮用的瓶装水", None, 1),
-            ("canned_food", {"scrap_metal": 2, "herb": 2, "cloth": 1, "food": 3}, "消耗食物资源，用金属片封装保存", None, 1),
-            ("rusty_knife", {"scrap_metal": 3, "cloth": 1}, "打磨金属片，缠上布条做握柄，制作简易小刀", None, 1),
-            ("rope", {"cloth": 3}, "将布料撕成条，编织成绳索", None, 1),
-            ("military_vest", {"iron": 5, "leather": 5, "cloth": 3}, "用金属板和皮革制作军用防弹衣", "workshop", 3),
-            ("mre", {"canned_food": 2, "cloth": 1, "plastic": 1}, "封装压缩食物，制作军用口粮", "workshop", 2),
-            ("iron", {"scrap_metal": 5, "fuel": 2}, "熔炼废金属，消耗燃料提取铁", "workshop", 1),
-            ("medicine", {"herb": 5, "water": 2}, "研磨草药加水熬制，制成基础药品", None, 1),
-            ("ammo", {"scrap_metal": 2, "gunpowder": 2}, "制作简易弹药", "workshop", 2),
-            ("fuel", {"wood": 5}, "加工木材制成燃料块", None, 1),
-        ]
-        for result_id, mats, desc, req_bld, min_lvl in _missing_recipes:
-            if RecipeRegistry.get(result_id) is None:
-                RecipeRegistry.register(
-                    result_id, mats,
-                    description=desc,
-                    required_building=req_bld,
-                    min_level=min_lvl,
-                )
+        return item.name if item else item_id
 
     def _format_recipe_entry(self, item_id, recipe, item):
         """格式化单条配方条目"""
@@ -1053,7 +987,7 @@ class SurvivorPlugin(Star):
         # 诊断：输出已注册数量，方便确认代码版本
         recipe_count = len(RecipeRegistry.get_all())
         item_count = len(ItemRegistry.get_all())
-        res_items = [i for i in ItemRegistry.get_all() if getattr(i, 'category', None) and str(i.category.value) == 'resource']
+        res_items = [i for i in ItemRegistry.get_all() if i.category == ItemCategory.RESOURCE]
         lines = [
             f"🔨 ===== 合成配方 (注册配方:{recipe_count}, 物品:{item_count}, 资源项:{len(res_items)}) =====",
             ""
@@ -1062,14 +996,13 @@ class SurvivorPlugin(Star):
         # 手动维护：基础生存物品（不需要工坊即可合成的日常补给）
         survival_ids = {"bottled_water", "canned_food", "rusty_knife", "rope"}
 
-        # 按产出分类分组（兼容旧版 ItemCategory 无 RESOURCE 的情况）
-        _res_cat = getattr(ItemCategory, "RESOURCE", None)
+        # 按产出分类分组
         category_order = [
             ("survival", "🍞 生存补给"),
             (ItemCategory.WEAPON, "⚔️ 武器"),
             (ItemCategory.ARMOR, "🛡️ 防具"),
             (ItemCategory.CONSUMABLE, "🍖 消耗品"),
-            (_res_cat, "⛏️ 基础资源"),
+            (ItemCategory.RESOURCE, "⛏️ 基础资源"),
             (ItemCategory.MATERIAL, "🔧 材料/工具"),
             (ItemCategory.SPECIAL, "📦 特殊"),
         ]

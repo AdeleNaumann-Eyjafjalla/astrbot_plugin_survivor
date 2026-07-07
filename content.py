@@ -303,7 +303,6 @@ def init_default_items():
         ))
 
     # === 基础资源（可作为合成产物） ===
-    _res_cat = getattr(ItemCategory, "RESOURCE", None) or ItemCategory.MATERIAL
     for res_id, res_name, res_desc in [
         ("food", "食物", "基础食物资源，维持饱食度"),
         ("water", "水", "基础水资源，维持口渴度"),
@@ -315,7 +314,7 @@ def init_default_items():
         ("fuel", "燃料", "燃料资源，驱动设备和熔炼金属"),
     ]:
         ItemRegistry.register(Item(
-            id=res_id, name=res_name, category=_res_cat,
+            id=res_id, name=res_name, category=ItemCategory.RESOURCE,
             description=res_desc, rarity="common"
         ))
 
