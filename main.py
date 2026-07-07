@@ -1024,14 +1024,13 @@ class SurvivorPlugin(Star):
             ("ammo", {"scrap_metal": 2, "gunpowder": 2}, "制作简易弹药", "workshop", 2, None),
             ("fuel", {"wood": 5}, "加工木材制成燃料块", None, 1, None),
         ]
-        for result_id, mats, desc, req_bld, min_lvl, res_costs in _missing_recipes:
+        for result_id, mats, desc, req_bld, min_lvl, _res_costs in _missing_recipes:
             if RecipeRegistry.get(result_id) is None:
                 RecipeRegistry.register(
                     result_id, mats,
                     description=desc,
                     required_building=req_bld,
                     min_level=min_lvl,
-                    resource_costs=res_costs,
                 )
 
     def _format_recipe_entry(self, item_id, recipe, item):
