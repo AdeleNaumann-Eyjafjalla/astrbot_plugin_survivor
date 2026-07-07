@@ -760,14 +760,15 @@ class SurvivorPlugin(Star):
             if cls_data:
                 class_info = f"👤 职业: {cls_data['name']}\n"
 
-        # 离线升级通知
+        # 离线升级通知（兼容旧版存档无此字段）
         offline_level_notice = ""
-        if player.unread_level_ups > 0:
+        offline_levels = getattr(player, "unread_level_ups", 0)
+        if offline_levels > 0:
             offline_level_notice = (
-                f"🎉 离线期间自动搜集升级了 {player.unread_level_ups} 次！"
-                f"当前 Lv.{player.level}，获得 {player.unread_level_ups * 2} 个技能点。\n"
+                f"🎉 离线期间自动搜集升级了 {offline_levels} 次！"
+                f"当前 Lv.{player.level}，获得 {offline_levels * 2} 个技能点。\n"
             )
-            player.unread_level_ups = 0
+            object.__setattr__(player, "unread_level_ups", 0)
 
         lines = [
             f"{emoji} ===== {player.nickname or '幸存者'}{title_str} 的状态 =====",

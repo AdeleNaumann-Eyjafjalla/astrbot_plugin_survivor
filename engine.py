@@ -487,7 +487,7 @@ class SurvivorEngine:
         # 升级
         new_level = current_level + 1
         player.buildings[building_id] = new_level
-        player.total_builds += 1
+        player.total_builds = getattr(player, "total_builds", 0) + 1
 
         return {
             "type": "success",
@@ -1003,9 +1003,10 @@ class SurvivorEngine:
             player.exp += random.randint(5, 15 + player.level * 2)
             self._check_level_up(player)
 
-        # 记录离线升级次数
+        # 记录离线升级次数（兼容旧版存档无此字段）
         if player.level > old_level:
-            player.unread_level_ups += (player.level - old_level)
+            prev = getattr(player, "unread_level_ups", 0)
+            object.__setattr__(player, "unread_level_ups", prev + (player.level - old_level))
 
         if player.health < player.max_health:
             heal = 1 + (player.level // 10)
@@ -1126,7 +1127,7 @@ class SurvivorEngine:
                 "total_actions": player.total_actions,
                 "pvp_wins": player.pvp_wins,
                 "pvp_losses": player.pvp_losses,
-                "total_builds": player.total_builds,
+                "total_builds": getattr(player, "total_builds", 0),
             }
             return bool(eval(condition, {"__builtins__": {}}, safe_dict))
         except Exception:
