@@ -960,24 +960,50 @@ class SurvivorPlugin(Star):
             f"💡 使用「状态」查看你的建筑情况。"
         )
 
+    def _format_recipe_entry(self, item_id, recipe, item):
+        """格式化单条配方条目"""
+        item_name = item.name if item else item_id
+        parts = []
+        for res_key, res_amt in recipe.get("resource_costs", {}).items():
+            ri = ItemRegistry.get(res_key)
+            parts.append(f"{ri.name if ri else res_key} ×{res_amt}")
+        for mid, amt in recipe["materials"].items():
+            mi = ItemRegistry.get(mid)
+            parts.append(f"{mi.name if mi else mid} ×{amt}")
+        mat_str = " + ".join(parts)
+        req = ""
+        if recipe.get("required_building"):
+            bld = BuildingRegistry.get(recipe["required_building"])
+            req = f" [需要{bld.name if bld else recipe['required_building']} Lv.{recipe['min_level']}]"
+        return f"  📌 {item_name}{req}\n     材料: {mat_str}"
+
     def _cmd_recipe_list(self) -> str:
         """查看合成配方"""
         lines = ["🔨 ===== 合成配方 =====", ""]
 
+        # 手动维护：基础生存物品（不需要工坊即可合成的日常补给）
+        survival_ids = {"bottled_water", "canned_food", "rusty_knife", "rope"}
+
         # 按产出分类分组（兼容旧版 ItemCategory 无 RESOURCE 的情况）
-        _resource_cat = getattr(ItemCategory, "RESOURCE", None)
+        _res_cat = getattr(ItemCategory, "RESOURCE", None)
         category_order = [
+            ("survival", "🍞 生存补给"),
             (ItemCategory.WEAPON, "⚔️ 武器"),
             (ItemCategory.ARMOR, "🛡️ 防具"),
             (ItemCategory.CONSUMABLE, "🍖 消耗品"),
-            (_resource_cat, "⛏️ 基础资源"),
+            (_res_cat, "⛏️ 基础资源"),
             (ItemCategory.MATERIAL, "🔧 材料/工具"),
             (ItemCategory.SPECIAL, "📦 特殊"),
         ]
 
-        # 先按分类归组
+        # 按分类归组（生存补给手动提取）
         grouped = {}
+        survival_recipes = []
         for item_id, recipe in RecipeRegistry.get_all().items():
+            if item_id in survival_ids:
+                item = ItemRegistry.get(item_id)
+                survival_recipes.append((item_id, recipe, item))
+                continue
             item = ItemRegistry.get(item_id)
             cat = item.category if item else ItemCategory.MATERIAL
             grouped.setdefault(cat, []).append((item_id, recipe, item))
@@ -986,58 +1012,25 @@ class SurvivorPlugin(Star):
         for cat, label in category_order:
             if cat is None:
                 continue
-            recipes_in_cat = grouped.pop(cat, [])
-            if not recipes_in_cat:
+            if cat == "survival":
+                entries = survival_recipes
+            else:
+                entries = grouped.pop(cat, [])
+            if not entries:
                 continue
             lines.append(label)
             lines.append("─" * 20)
-            for item_id, recipe, item in recipes_in_cat:
-                item_name = item.name if item else item_id
-
-                # 材料文本
-                parts = []
-                # 资源消耗（resource_costs 用 ItemRegistry 获取中文名）
-                for res_key, res_amt in recipe.get("resource_costs", {}).items():
-                    res_item = ItemRegistry.get(res_key)
-                    parts.append(f"{res_item.name if res_item else res_key} x{res_amt}")
-                # 合成材料
-                for mid, amt in recipe["materials"].items():
-                    mat_item = ItemRegistry.get(mid)
-                    parts.append(f"{mat_item.name if mat_item else mid} x{amt}")
-
-                mat_str = " + ".join(parts)
-
-                # 建筑要求
-                req = ""
-                if recipe.get("required_building"):
-                    bld = BuildingRegistry.get(recipe["required_building"])
-                    req = f" [需要{bld.name if bld else recipe['required_building']} Lv.{recipe['min_level']}]"
-
-                lines.append(f"  📌 {item_name}{req}")
-                lines.append(f"     材料: {mat_str}")
+            for item_id, recipe, item in entries:
+                lines.append(self._format_recipe_entry(item_id, recipe, item))
             lines.append("")
 
-        # 兜底：未归类到上述分类的
+        # 兜底：未归类配方
         if grouped:
             lines.append("📦 其他")
             lines.append("─" * 20)
-            for cat, recipes_in_cat in grouped.items():
+            for _cat, recipes_in_cat in grouped.items():
                 for item_id, recipe, item in recipes_in_cat:
-                    item_name = item.name if item else item_id
-                    parts = []
-                    for res_key, res_amt in recipe.get("resource_costs", {}).items():
-                        res_item = ItemRegistry.get(res_key)
-                        parts.append(f"{res_item.name if res_item else res_key} x{res_amt}")
-                    for mid, amt in recipe["materials"].items():
-                        mat_item = ItemRegistry.get(mid)
-                        parts.append(f"{mat_item.name if mat_item else mid} x{amt}")
-                    mat_str = " + ".join(parts)
-                    req = ""
-                    if recipe.get("required_building"):
-                        bld = BuildingRegistry.get(recipe["required_building"])
-                        req = f" [需要{bld.name if bld else recipe['required_building']} Lv.{recipe['min_level']}]"
-                    lines.append(f"  📌 {item_name}{req}")
-                    lines.append(f"     材料: {mat_str}")
+                    lines.append(self._format_recipe_entry(item_id, recipe, item))
             lines.append("")
 
         lines.append("💡 使用「合成 [物品名] [数量]」来合成物品")
