@@ -73,11 +73,23 @@ from content import (
     EventRegistry, SkillRegistry, RecipeRegistry,
     AchievementRegistry, ClassRegistry
 )
-import llm_events
 
-# 数据文件路径
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-SAVE_FILE = os.path.join(DATA_DIR, "save_data.json")
+
+def _resolve_data_dir(plugin_name: str) -> str:
+    """解析插件持久化数据目录。
+
+    优先使用 AstrBot 框架提供的 data/plugin_data/{plugin_name}/ 目录；
+    开发环境回退到插件目录下的 data/。
+    """
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+        from pathlib import Path
+        return str(Path(get_astrbot_data_path()) / "plugin_data" / plugin_name)
+    except ImportError:
+        return os.path.join(os.path.dirname(__file__), "data")
+
+
+import llm_events
 
 # ================================================================
 # 命令常量 —— 使用 @filter.command 注册到 AstrBot 指令系统
@@ -153,8 +165,13 @@ class SurvivorPlugin(Star):
         # 线程安全锁（保护定时器线程与主线程的数据读写）
         self._data_lock = threading.RLock()
 
-        # 确保数据目录存在
-        os.makedirs(DATA_DIR, exist_ok=True)
+        # 解析并确保数据目录存在（优先使用 AstrBot 持久化目录）
+        self.data_dir = _resolve_data_dir(self.name)
+        self.save_file = os.path.join(self.data_dir, "save_data.json")
+        os.makedirs(self.data_dir, exist_ok=True)
+
+        # 旧数据迁移：如果旧位置有存档而新位置没有，则复制过来
+        self._migrate_old_save()
 
         # 初始化游戏内容
         init_all_content()
@@ -1651,14 +1668,26 @@ class SurvivorPlugin(Star):
     # 数据持久化
     # ================================================================
 
+    def _migrate_old_save(self):
+        """将旧位置的存档迁移到新的 AstrBot 持久化目录"""
+        old_dir = os.path.join(os.path.dirname(__file__), "data")
+        old_file = os.path.join(old_dir, "save_data.json")
+        if os.path.isfile(old_file) and not os.path.exists(self.save_file):
+            try:
+                import shutil
+                shutil.copy2(old_file, self.save_file)
+                print(f"[Survivor] 已从旧目录迁移存档: {old_file} → {self.save_file}")
+            except Exception as e:
+                print(f"[Survivor] 迁移旧存档失败: {e}")
+
     def _load_data(self):
         """加载存档"""
         try:
-            if os.path.exists(SAVE_FILE):
-                with open(SAVE_FILE, 'r', encoding='utf-8') as f:
+            if os.path.exists(self.save_file):
+                with open(self.save_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.engine.import_data(data)
-                print(f"[Survivor] 存档已加载")
+                print(f"[Survivor] 存档已加载: {self.save_file}")
         except Exception as e:
             print(f"[Survivor] 加载存档失败: {e}")
 
@@ -1666,7 +1695,7 @@ class SurvivorPlugin(Star):
         """保存存档（调用者必须持有 self._data_lock）"""
         try:
             data = self.engine.export_data()
-            with open(SAVE_FILE, 'w', encoding='utf-8') as f:
+            with open(self.save_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[Survivor] 保存存档失败: {e}")
