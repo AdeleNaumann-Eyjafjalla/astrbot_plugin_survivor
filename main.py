@@ -147,7 +147,7 @@ class SurvivorPlugin(Star):
     - 探索 / 行动                   执行一次探索行动
     - 选择 [1-4]                    选择事件选项
     - 状态 / 我的状态                查看当前状态
-    - 背包 / 物品                    查看背包
+    - 背包 / 物品                    查看背包和资源
     - 建造 [建筑名]                  建造/升级建筑
     - 合成 [物品名] [数量]           合成物品
     - 使用 [物品名]                  使用物品
@@ -617,15 +617,9 @@ class SurvivorPlugin(Star):
             f"文明已经崩塌，你必须在废墟中生存下去...\n"
             f"{class_info}"
             f"━━━━━━━━━━━━━━━\n"
-            f"📋 初始物资：\n"
-            f"  🍖 食物 x{player.resources.get('food', 0)}"
-            f"    💧 水 x{player.resources.get('water', 0)}\n"
-            f"  🪵 木材 x{player.resources.get('wood', 0)}"
-            f"     🪨 石料 x{player.resources.get('stone', 0)}\n"
-            f"  💊 药品 x{player.resources.get('medicine', 0)}"
-            f"     ⚔️ 攻击力 {player.attack}\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"💡 使用「探索」开始你的第一次行动！\n"
+            f"💡 使用「背包」查看你的初始物资\n"
+            f"💡 使用「状态」查看你的生存状态\n"
+            f"💡 使用「探索」开始你的第一次行动\n"
             f"💡 使用「帮助」查看所有指令"
         )
 
@@ -799,17 +793,7 @@ class SurvivorPlugin(Star):
             f"💧 口渴度: {player.thirst}/100",
             f"🧠 理智值: {player.sanity}/100",
             f"⚔️ 攻击: {player.attack} | 🛡️ 防御: {player.defense}",
-            f"",
-            f"📦 资源：",
         ])
-
-        res_display = {"food": ("🍖", "食物"), "water": ("💧", "水"), "wood": ("🪵", "木材"),
-                       "stone": ("🪨", "石料"), "iron": ("🔩", "铁"), "medicine": ("💊", "药品"),
-                       "ammo": ("🔫", "弹药"), "fuel": ("⛽", "燃料")}
-        for res, amount in player.resources.items():
-            if amount > 0:
-                icon, name = res_display.get(res, ("📦", res))
-                lines.append(f"  {icon} {name}: {amount}")
 
         # 装备
         if player.equipped_weapon or player.equipped_armor:
@@ -852,10 +836,27 @@ class SurvivorPlugin(Star):
         if not player:
             return "⚠️ 你还没有开始生存！"
 
-        if not player.inventory:
-            return "🎒 你的背包是空的。"
-
         lines = ["🎒 ===== 背包物品 =====", ""]
+
+        # 基础资源（放在背包最前面）
+        res_display = {"food": ("🍖", "食物"), "water": ("💧", "水"), "wood": ("🪵", "木材"),
+                       "stone": ("🪨", "石料"), "iron": ("🔩", "铁"), "medicine": ("💊", "药品"),
+                       "ammo": ("🔫", "弹药"), "fuel": ("⛽", "燃料")}
+        has_resources = any(player.resources.get(r, 0) > 0 for r in res_display)
+        if has_resources:
+            lines.append("📦 基础资源：")
+            for res_id, (icon, name) in res_display.items():
+                amount = player.resources.get(res_id, 0)
+                if amount > 0:
+                    lines.append(f"  {icon} {name} x{amount}")
+            lines.append("")
+
+        if not player.inventory:
+            if has_resources:
+                lines.append("💡 你的物品栏暂时没有道具。")
+            else:
+                return "🎒 你的背包是空的。"
+            return "\n".join(lines)
 
         # 按分类整理
         categories = {
@@ -976,9 +977,8 @@ class SurvivorPlugin(Star):
 
     @staticmethod
     def _item_name(item_id: str) -> str:
-        """获取物品中文名"""
-        item = ItemRegistry.get(item_id)
-        return item.name if item else item_id
+        """获取物品中文名（优先注册表，fallback 到内置映射）"""
+        return ItemRegistry.get_name(item_id)
 
     def _format_recipe_entry(self, item_id, recipe, item):
         """格式化单条配方条目"""
@@ -1314,7 +1314,7 @@ class SurvivorPlugin(Star):
             f"  · 探索 - 外出搜索，触发随机事件（额外收益）\n"
             f"  · 选择 [数字] - 在事件中做出选择\n"
             f"  · 状态 - 查看生存状态\n"
-            f"  · 背包 - 查看背包物品\n"
+            f"  · 背包 - 查看背包物品和资源\n"
             f"  · 使用 [物品名] - 使用消耗品\n"
             f"  · 装备 [物品名] - 装备武器或防具\n"
             f"  · 帮助 - 显示本帮助\n"
@@ -1673,6 +1673,7 @@ class SurvivorPlugin(Star):
                 weather=group.weather,
                 danger_level=group.danger_level,
                 day=group.current_day,
+                force=True,  # 跳过冷却，允许批量补充
             )
             if n <= 0:
                 break  # LLM 调用失败则停止

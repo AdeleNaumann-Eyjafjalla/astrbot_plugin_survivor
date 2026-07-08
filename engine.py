@@ -139,12 +139,15 @@ class SurvivorEngine:
                     player.add_item(item_id, count)
                 # 初始资源加成
                 for res, amount in class_data.get("starting_resources", {}).items():
-                    player.resources[res] = player.resources.get(res, 0) + amount
+                    player.add_resource(res, amount)
                 # 商人物资加成
                 if "start_boost" in bonuses:
                     for res in ["food", "water", "wood", "stone"]:
                         if res in player.resources:
-                            player.resources[res] = int(player.resources[res] * (1 + bonuses["start_boost"]))
+                            new_val = int(player.resources[res] * (1 + bonuses["start_boost"]))
+                            delta = new_val - player.resources[res]
+                            if delta > 0:
+                                player.add_resource(res, delta)
 
                 # 医生免疫疾病
                 if bonuses.get("immune_sick"):
@@ -303,7 +306,7 @@ class SurvivorEngine:
                 if "lose_resources" in result:
                     for res, ratio in result["lose_resources"].items():
                         lost = int(player.resources.get(res, 0) * ratio)
-                        player.resources[res] = max(0, player.resources.get(res, 0) - lost)
+                        player.consume_resource(res, lost)
 
         # 处理逃跑/潜行
         if "escape_chance" in result:
@@ -371,7 +374,7 @@ class SurvivorEngine:
         if "lose_resources" in result:
             for res, ratio in result["lose_resources"].items():
                 lost = int(player.resources.get(res, 0) * ratio)
-                player.resources[res] = max(0, player.resources.get(res, 0) - lost)
+                player.consume_resource(res, lost)
 
         # 添加描述消息
         if "description" in result:
@@ -456,30 +459,44 @@ class SurvivorEngine:
                 cost = {k: max(1, int(v * (1 - discount))) for k, v in cost.items()}
 
         # 检查资源和物品消耗
+        # 注意：wood/water/stone/iron/medicine/ammo/fuel 同时存在于 ItemRegistry(RESOURCE) 和资源池，
+        # 消耗时应优先从玩家资源池扣除（而非背包）
+        RESOURCE_KEYS = {"food", "water", "wood", "stone", "iron", "medicine", "ammo", "fuel"}
         res_names = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石料",
                     "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
         for cost_id, amount in cost.items():
             item = ItemRegistry.get(cost_id)
-            if item:
-                # 这是物品消耗，检查背包
-                if not player.has_item(cost_id, amount):
-                    return {
-                        "type": "error",
-                        "message": f"⚠️ 材料不足！需要 {item.name} x{amount}，背包中数量不足。"
-                    }
-            else:
-                # 这是资源消耗
+            is_resource = cost_id in RESOURCE_KEYS or (item and item.category == ItemCategory.RESOURCE)
+            if is_resource:
+                # 资源消耗，检查玩家资源池
                 if player.get_resource(cost_id) < amount:
                     res_label = res_names.get(cost_id, cost_id)
                     return {
                         "type": "error",
                         "message": f"⚠️ 资源不足！需要 {amount} {res_label}，你只有 {player.get_resource(cost_id)}。"
                     }
+            elif item:
+                # 物品消耗，检查背包
+                if not player.has_item(cost_id, amount):
+                    return {
+                        "type": "error",
+                        "message": f"⚠️ 材料不足！需要 {item.name} x{amount}，背包中数量不足。"
+                    }
+            else:
+                # 未知消耗项，尝试从资源池扣
+                if player.get_resource(cost_id) < amount:
+                    return {
+                        "type": "error",
+                        "message": f"⚠️ 资源不足！需要 {cost_id} x{amount}，你只有 {player.get_resource(cost_id)}。"
+                    }
 
         # 消耗资源和物品
         for cost_id, amount in cost.items():
             item = ItemRegistry.get(cost_id)
-            if item:
+            is_resource = cost_id in RESOURCE_KEYS or (item and item.category == ItemCategory.RESOURCE)
+            if is_resource:
+                player.consume_resource(cost_id, amount)
+            elif item:
                 player.remove_item(cost_id, amount)
             else:
                 player.consume_resource(cost_id, amount)
@@ -555,22 +572,23 @@ class SurvivorEngine:
                     "message": f"⚠️ 资源不足！需要 {res_name}x{needed}，当前仅有 {current}。"
                 }
 
-        # 检查材料（先查背包，再查基础资源）
+        # 检查材料（先查背包，再查基础资源，最后算组合）
         for mat_id, mat_amount in materials.items():
             needed = mat_amount * count
-            inv_has = player.has_item(mat_id, needed)
-            res_has = player.resources.get(mat_id, 0) >= needed
-            if not inv_has and not res_has:
+            inv_count = player.inventory.get(mat_id, 0)
+            res_count = player.resources.get(mat_id, 0)
+            total = inv_count + res_count
+            if total < needed:
                 mat_def = ItemRegistry.get(mat_id)
                 mat_name = mat_def.name if mat_def else mat_id
                 return {
                     "type": "error",
-                    "message": f"⚠️ 材料不足！需要 {needed} 个{mat_name}。"
+                    "message": f"⚠️ 材料不足！需要 {needed} 个{mat_name}，你只有 {total} 个。"
                 }
 
         # 消耗资源（resource_costs 从玩家资源池扣除）
         for res_key, res_amount in resource_costs.items():
-            player.resources[res_key] -= res_amount * count
+            player.consume_resource(res_key, res_amount * count)
 
         # 消耗材料（优先扣背包物品，不够再从资源池扣）
         for mat_id, mat_amount in materials.items():
@@ -582,11 +600,11 @@ class SurvivorEngine:
                 # 先把背包里的扣完，剩下的从资源池扣
                 if inv_have > 0:
                     player.remove_item(mat_id, inv_have)
-                player.resources[mat_id] = player.resources.get(mat_id, 0) - (needed - inv_have)
+                player.consume_resource(mat_id, needed - inv_have)
 
         # 获得成品：资源类产出写入资源池，普通物品写入背包
         if item_def and getattr(item_def, "category", None) and item_def.category.value == "resource":
-            player.resources[item_id] = player.resources.get(item_id, 0) + count
+            player.add_resource(item_id, count)
         else:
             player.add_item(item_id, count)
         player.stats["items_crafted"] += count
@@ -682,6 +700,34 @@ class SurvivorEngine:
             elif item_id == "radio":
                 messages.append("📻 无线电中传来断断续续的声音...似乎有其他幸存者在附近。")
                 player.add_resource("food", random.randint(3, 10))
+            elif item_id == "molotov":
+                exp = random.randint(100, 200)
+                player.exp += exp
+                scrap = random.randint(3, 6)
+                iron_gain = random.randint(2, 5)
+                player.add_item("scrap_metal", scrap)
+                player.add_resource("iron", iron_gain)
+                messages.append(f"🔥 你投掷了燃烧瓶！烈焰吞噬了敌人。获得 {exp} 经验、{scrap} 废金属、{iron_gain} 铁。")
+            elif item_id == "night_gear":
+                exp = random.randint(80, 200)
+                player.exp += exp
+                food_gain = random.randint(5, 20)
+                water_gain = random.randint(5, 15)
+                player.add_resource("food", food_gain)
+                player.add_resource("water", water_gain)
+                messages.append(f"🌙 夜行装备让你在夜间如鱼得水！获得 {exp} 经验、{food_gain} 食物、{water_gain} 水。")
+            elif item_id == "firestarter":
+                food_gain = random.randint(8, 20)
+                heal = 20
+                player.add_resource("food", food_gain)
+                player.health = min(player.max_health, player.health + heal)
+                messages.append(f"🔥 你生起篝火烹饪食物、取暖休息。获得 {food_gain} 食物，恢复了 {heal} 生命值。")
+            elif item_id == "trap_kit":
+                food_gain = random.randint(10, 25)
+                leather_gain = random.randint(2, 5)
+                player.add_resource("food", food_gain)
+                player.add_item("leather", leather_gain)
+                messages.append(f"🪤 陷阱成功捕获了猎物！获得 {food_gain} 食物、{leather_gain} 皮革。")
 
             return {
                 "type": "success",
@@ -886,7 +932,7 @@ class SurvivorEngine:
             return weapon.attack_bonus, "⚠️ 弹药耗尽！远程武器无法使用，本次战斗无武器加成。"
 
         cost = random.randint(count_range[0], min(count_range[1], current_ammo))
-        player.resources["ammo"] = current_ammo - cost
+        player.consume_resource("ammo", cost)
         return 0, f"🔫 消耗了 {cost} 弹药。剩余 {player.resources['ammo']}。"
 
     def _resolve_combat(self, player: PlayerState, combat_data: Dict) -> Dict[str, Any]:
@@ -1094,11 +1140,11 @@ class SurvivorEngine:
                 # 发放奖励
                 for item_id, count in achievement.reward_items.items():
                     if self._is_resource_id(item_id):
-                        player.resources[item_id] = player.resources.get(item_id, 0) + count
+                        player.add_resource(item_id, count)
                     else:
                         player.add_item(item_id, count)
                 for res, amount in achievement.reward_resources.items():
-                    player.resources[res] = player.resources.get(res, 0) + amount
+                    player.add_resource(res, amount)
                 if achievement.reward_exp > 0:
                     player.exp += achievement.reward_exp
                 if achievement.reward_title:
@@ -1242,8 +1288,8 @@ class SurvivorEngine:
                 target_amount = target.resources.get(res, 0)
                 if target_amount > 0:
                     steal = random.randint(1, max(1, target_amount // 2))
-                    target.resources[res] = target_amount - steal
-                    attacker.resources[res] = attacker.resources.get(res, 0) + steal
+                    target.consume_resource(res, steal)
+                    attacker.add_resource(res, steal)
                     stolen_resources[res] = steal
 
             # 抢夺物品（随机1-2种）

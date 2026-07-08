@@ -18,15 +18,46 @@ class ItemRegistry:
 
     _items: Dict[str, Item] = {}
 
+    # 全局中文名兜底映射：即使物品未注册也能返回中文名
+    _NAME_FALLBACK: Dict[str, str] = {
+        "food": "食物", "water": "水", "wood": "木材", "stone": "石料",
+        "iron": "铁", "medicine": "药品", "ammo": "弹药", "fuel": "燃料",
+        "scrap_metal": "废金属", "cloth": "布料", "rope": "绳索",
+        "nails": "钉子", "glass": "玻璃", "electronics": "电子零件",
+        "gunpowder": "火药", "herb": "草药", "leather": "皮革",
+        "plastic": "塑料", "wood_plank": "木板", "matchbox": "火柴",
+        "battery": "电池", "flashlight": "手电筒",
+        "molotov": "燃烧瓶", "night_gear": "夜行装备",
+        "firestarter": "引火工具", "trap_kit": "陷阱套件",
+        "rusty_knife": "生锈的小刀", "baseball_bat": "棒球棍",
+        "hunting_rifle": "猎枪", "fire_axe": "消防斧", "crossbow": "十字弩",
+        "flame_sword": "火焰剑", "leather_jacket": "皮夹克",
+        "riot_shield": "防暴盾牌", "military_vest": "军用防弹衣",
+        "canned_food": "罐头食品", "bottled_water": "瓶装水",
+        "bandage": "绷带", "first_aid_kit": "急救包", "mre": "军用口粮",
+        "stimpack": "兴奋剂", "antidote": "解毒剂",
+        "survivor_journal": "幸存者日记", "radio": "无线电",
+    }
+
     @classmethod
     def register(cls, item: Item):
         """注册物品"""
         cls._items[item.id] = item
+        # 同步更新 fallback 映射
+        cls._NAME_FALLBACK[item.id] = item.name
 
     @classmethod
     def get(cls, item_id: str) -> Optional[Item]:
         """获取物品定义"""
         return cls._items.get(item_id)
+
+    @classmethod
+    def get_name(cls, item_id: str) -> str:
+        """获取物品中文名，未注册时从 fallback 映射查找"""
+        item = cls._items.get(item_id)
+        if item:
+            return item.name
+        return cls._NAME_FALLBACK.get(item_id, item_id)
 
     @classmethod
     def get_all(cls) -> List[Item]:
@@ -295,7 +326,8 @@ def init_default_items():
         ("scrap_metal", "废金属"), ("cloth", "布料"), ("rope", "绳索"),
         ("nails", "钉子"), ("glass", "玻璃"), ("electronics", "电子零件"),
         ("gunpowder", "火药"), ("herb", "草药"), ("leather", "皮革"),
-        ("plastic", "塑料"),
+        ("plastic", "塑料"), ("wood_plank", "木板"), ("matchbox", "火柴"),
+        ("battery", "电池"), ("flashlight", "手电筒"),
     ]:
         ItemRegistry.register(Item(
             id=mat_id, name=mat_name, category=ItemCategory.MATERIAL,
@@ -328,6 +360,26 @@ def init_default_items():
         id="radio", name="无线电", category=ItemCategory.SPECIAL,
         description="一台还能工作的无线电，或许能收到其他幸存者的信号。",
         rarity="rare"
+    ))
+    ItemRegistry.register(Item(
+        id="molotov", name="燃烧瓶", category=ItemCategory.SPECIAL,
+        description="自制的简易燃烧瓶，投掷后可造成大范围火焰伤害。",
+        rarity="uncommon"
+    ))
+    ItemRegistry.register(Item(
+        id="night_gear", name="夜行装备", category=ItemCategory.SPECIAL,
+        description="自制的夜视和照明装备，夜间探索更加安全高效。",
+        rarity="rare"
+    ))
+    ItemRegistry.register(Item(
+        id="firestarter", name="引火工具", category=ItemCategory.SPECIAL,
+        description="便携引火套装，随时生火取暖、烹饪食物。",
+        rarity="uncommon"
+    ))
+    ItemRegistry.register(Item(
+        id="trap_kit", name="陷阱套件", category=ItemCategory.SPECIAL,
+        description="一套捕猎陷阱组件，可捕获小动物获取食物和皮革。",
+        rarity="uncommon"
     ))
 
 
@@ -1803,6 +1855,27 @@ def init_default_recipes():
     RecipeRegistry.register(
         "fuel", {"wood": 5},
         description="加工木材制成燃料块"
+    )
+    # 新增：消耗未利用材料的特殊道具配方
+    RecipeRegistry.register(
+        "molotov", {"glass": 2, "cloth": 1, "fuel": 3},
+        description="制作简易燃烧瓶，投掷造成范围火焰伤害",
+        required_building="workshop", min_level=1
+    )
+    RecipeRegistry.register(
+        "night_gear", {"flashlight": 1, "battery": 1, "electronics": 2, "glass": 1},
+        description="组装夜行装备，夜间探索效率提升",
+        required_building="workshop", min_level=2
+    )
+    RecipeRegistry.register(
+        "firestarter", {"matchbox": 1, "wood": 5, "cloth": 2},
+        description="制作便携引火工具，生火取暖烹饪",
+        required_building="workshop", min_level=1
+    )
+    RecipeRegistry.register(
+        "trap_kit", {"wood_plank": 3, "rope": 2, "nails": 3},
+        description="组装陷阱套件，捕获小动物获得食物和皮革",
+        required_building="workshop", min_level=1
     )
 
 
