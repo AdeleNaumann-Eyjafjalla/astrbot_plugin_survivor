@@ -215,6 +215,10 @@ class SurvivorPlugin(Star):
 
     async def initialize(self):
         """Star 插件初始化钩子（异步），在此启动后台定时任务"""
+        # 保存事件循环引用，供后台线程调度异步发送
+        self._loop = asyncio.get_running_loop()
+        # 群组 unified_msg_origin 缓存（用于主动推送每日结算）
+        self._group_umo: dict = {}
         # 尝试启用 LLM 事件生成
         await self._init_llm_events()
 
@@ -233,6 +237,11 @@ class SurvivorPlugin(Star):
         try:
             user_id = str(event.get_sender_id())
             group_id = str(event.get_group_id())
+            # 缓存 unified_msg_origin，供后台每日结算主动推送使用
+            try:
+                self._group_umo[group_id] = event.unified_msg_origin
+            except Exception:
+                pass
             msg = (event.message_str or "").strip()
             if not msg or not user_id or not group_id:
                 return
@@ -2110,15 +2119,41 @@ class SurvivorPlugin(Star):
         t.start()
 
     def _daily_tick_all(self):
-        """对所有群组执行每日结算"""
+        """对所有群组执行每日结算，并将状态摘要推送到群聊"""
         with self._data_lock:
+            summaries: list = []  # [(group_id, summary_text)]
             for group_id in list(self.engine._groups.keys()):
                 try:
-                    self.engine.daily_tick(group_id)
+                    result = self.engine.daily_tick(group_id)
+                    if result.get("summary"):
+                        summaries.append((group_id, result["summary"]))
                 except Exception as e:
                     print(f"[Survivor] 群 {group_id} 每日结算失败: {e}")
 
             self._save_data_nolock()
+
+        # 异步推送每日结算摘要到各群（从线程调度到事件循环）
+        if summaries and getattr(self, "_loop", None):
+            for group_id, text in summaries:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._send_group_summary(group_id, text),
+                        self._loop,
+                    )
+                except Exception as e:
+                    print(f"[Survivor] 每日结算推送失败 (群 {group_id}): {e}")
+
+    async def _send_group_summary(self, group_id: str, text: str):
+        """异步发送每日结算摘要到群聊"""
+        umo = self._group_umo.get(group_id)
+        if not umo or not self.context:
+            return
+        try:
+            from astrbot.api.event import MessageChain
+            chain = MessageChain().message(text)
+            await self.context.send_message(umo, chain)
+        except Exception as e:
+            print(f"[Survivor] 发送结算消息失败 (群 {group_id}): {e}")
 
     # ================================================================
     # 数据持久化

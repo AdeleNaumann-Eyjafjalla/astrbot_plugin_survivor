@@ -821,12 +821,41 @@ class SurvivorEngine:
                            "autumn": "🍂 秋季", "winter": "❄️ 冬季"}
             announcements.append(f"🌍 季节更替：{season_names.get(group.current_season, group.current_season)}")
 
+        # 9. 构建幸存者状态摘要
+        alive_lines = []
+        dead_names = []
+        for uid, p in players.items():
+            name = p.nickname or f"玩家{uid[-4:]}"
+            if p.is_alive():
+                cls_name = ""
+                if p.player_class:
+                    cd = ClassRegistry.get(p.player_class)
+                    if cd:
+                        cls_name = f" {cd['name']}"
+                alive_lines.append(
+                    f"  ✅ {name} Lv.{p.level}{cls_name}: "
+                    f"❤️{p.health}/{p.max_health} 🍖{p.hunger} 💧{p.thirst}"
+                )
+            else:
+                dead_names.append(name)
+
+        summary_lines = [f"🌅 ===== 第 {group.current_day} 天结算 ====="]
+        summary_lines.append(f"👥 幸存者状态 (存活 {len(alive_lines)} / 总计 {len(players)}):")
+        if alive_lines:
+            summary_lines.extend(alive_lines)
+        else:
+            summary_lines.append("  (无幸存者)")
+        if dead_names:
+            summary_lines.append(f"💀 已死亡: {', '.join(dead_names)}")
+        summary = "\n".join(summary_lines)
+
         return {
             "day": group.current_day,
             "season": group.current_season,
             "danger_level": group.danger_level,
             "announcements": announcements,
             "player_count": len(players),
+            "summary": summary,
         }
 
     # ================================================================
