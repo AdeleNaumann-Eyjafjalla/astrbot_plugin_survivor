@@ -416,6 +416,26 @@ class PlayerState:
 # ============================================================
 
 @dataclass
+class MerchantOffer:
+    """商人货品定义"""
+    item_id: str                # 物品ID（或资源ID）
+    name: str                   # 显示名称
+    is_resource: bool = False   # 是否为资源类
+    stock: int = 1              # 库存数量
+    buy_price: Dict[str, int] = field(default_factory=dict)   # 购买所需资源
+    sell_price: Dict[str, int] = field(default_factory=dict)   # 出售获得资源
+
+
+@dataclass
+class MerchantState:
+    """群组级别商人状态"""
+    group_id: str
+    inventory: List[MerchantOffer] = field(default_factory=list)  # 当前库存
+    last_refresh_day: int = 0    # 上次刷新天数
+    refresh_interval: int = 1    # 每N天刷新一次
+
+
+@dataclass
 class GroupGameState:
     """群组级别的游戏状态"""
     group_id: str
@@ -433,6 +453,9 @@ class GroupGameState:
 
     # 群组公告板
     announcements: List[str] = field(default_factory=list)
+
+    # 商人状态（运行时维护，不持久化到存档）
+    merchant: Optional[Any] = None
 
     def advance_day(self):
         """推进一天"""

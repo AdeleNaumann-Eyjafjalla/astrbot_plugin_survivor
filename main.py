@@ -128,6 +128,9 @@ CMD_SET_TITLE = "佩戴称号"
 CMD_PVP = "偷袭"
 CMD_GIVE = "给予"
 CMD_GIVE_ALIAS = "赠送"
+CMD_MERCHANT = "商人"
+CMD_BUY = "购买"
+CMD_SELL = "出售"
 CMD_LEADERBOARD = "排行榜"
 CMD_RESPAWN = "重生"
 CMD_HELP = "帮助"
@@ -162,6 +165,9 @@ class SurvivorPlugin(Star):
     - 职业列表                       查看可选职业
     - 偷袭 [@玩家/QQ号]              PvP 偷袭其他玩家
     - 给予 [@玩家] [物品] [数量]      赠予其他玩家资源或道具
+    - 商人                           查看末日商人货品
+    - 购买 [编号] [数量]              向商人购买物品（用资源换）
+    - 出售 [物品名] [数量]            向商人出售物品（换资源）
     - 排行榜                         查看群内排行
     - 重生                           死亡后重新开始
     - 天气                           查看当前天气
@@ -509,6 +515,34 @@ class SurvivorPlugin(Star):
         async for r in self.handle_give(event):
             yield r
         return
+
+    @filter.command(CMD_MERCHANT, "查看末日商人货品列表")
+    async def handle_merchant(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_merchant(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_BUY, "向商人购买物品（用资源交换）")
+    async def handle_buy(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        message_str = (event.message_str or "").strip()
+        args = message_str[len(CMD_BUY):].strip()
+        result = self._cmd_buy(user_id, group_id, args)
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_SELL, "向商人出售物品（换取资源）")
+    async def handle_sell(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        message_str = (event.message_str or "").strip()
+        args = message_str[len(CMD_SELL):].strip()
+        result = self._cmd_sell(user_id, group_id, args)
+        event.stop_event()
+        yield event.plain_result(result)
 
     @filter.command(CMD_LEADERBOARD, "查看群内生存排行")
     async def handle_leaderboard(self, event: AstrMessageEvent):
@@ -1476,6 +1510,14 @@ class SurvivorPlugin(Star):
             f"  · 可给予道具：使用完整道具名称，如「绷带」「罐头食品」等\n"
             f"  · 例：「给予 @某人 木材 10」「赠送 @某人 绷带 3」\n"
             f"\n"
+            f"🏕️ 末日商人：\n"
+            f"  · 商人 - 查看当前货品列表\n"
+            f"  · 购买 [编号] [数量] - 用资源购买商人货品\n"
+            f"  · 出售 [物品名] [数量] - 把物品卖给商人换资源\n"
+            f"  · 商人每日自动补货，货品随机\n"
+            f"  · 商人职业享有 40% 交易优惠\n"
+            f"  · 例：「购买 1 2」「出售 绷带 3」\n"
+            f"\n"
             f"🌤️ 天气系统：\n"
             f"  · 天气 - 查看当前天气\n"
             f"  · 不同天气影响探索事件\n"
@@ -1877,8 +1919,137 @@ class SurvivorPlugin(Star):
             f"🤝 ===== 物资赠予 =====\n\n"
             f"你向 {target_display} 赠予了：\n"
             f"  {display} x{amount}\n\n"
-            f"当前余量：{current - amount} → {max(0, current - amount)}"
+            f"当前余量：{current} → {max(0, current - amount)}"
         )
+
+    # ================================================================
+    # 末日商人系统
+    # ================================================================
+
+    def _cmd_merchant(self, user_id: str, group_id: str) -> str:
+        """查看商人货品"""
+        player = self.engine.get_player(user_id, group_id)
+        if not player or not player.is_alive():
+            return "⚠️ 你还没有开始生存或已死亡！"
+
+        offers = self.engine.get_merchant_inventory(group_id)
+        if not offers:
+            return "🚚 商人正在赶路中，暂时没有货物。请等待下次补货。"
+
+        group = self.engine.ensure_group(group_id)
+        merchant = self.engine._ensure_merchant(group_id)
+
+        lines = [
+            f"🏕️ ===== 末日商人 =====\n",
+            f"📅 第 {group.current_day} 天 | 🔄 每日自动补货\n",
+            f"━━━━━━━━━━━━━━━━━━\n",
+        ]
+
+        for i, offer in enumerate(offers):
+            stock_tag = "📦" if offer.stock > 0 else "❌售罄"
+            item_icon = "🪙" if offer.is_resource else "📦"
+            # 购买价显示
+            buy_str = "、".join(
+                f"{ItemRegistry.get_name(k)}{v}" for k, v in offer.buy_price.items()
+            )
+            # 出售价显示
+            sell_str = "、".join(
+                f"{ItemRegistry.get_name(k)}{v}" for k, v in offer.sell_price.items()
+            )
+
+            if offer.stock > 0:
+                lines.append(
+                    f"  {i + 1}. {item_icon} {offer.name} x{offer.stock} {stock_tag}\n"
+                    f"     🛒 购买需：{buy_str}\n"
+                    f"     💰 出售得：{sell_str}\n"
+                )
+            else:
+                lines.append(
+                    f"  {i + 1}. {item_icon} {offer.name} {stock_tag}\n"
+                )
+
+        lines.append(f"\n━━━━━━━━━━━━━━━━━━")
+        lines.append(f"💡 使用「购买 编号 [数量]」购买 |「出售 物品名 [数量]」出售")
+        lines.append(f"💡 商人职业享有 40% 交易优惠")
+
+        return "\n".join(lines)
+
+    def _cmd_buy(self, user_id: str, group_id: str, args: str) -> str:
+        """从商人购买"""
+        player = self.engine.get_player(user_id, group_id)
+        if not player or not player.is_alive():
+            return "⚠️ 你还没有开始生存或已死亡！"
+
+        if not args:
+            return "⚠️ 请输入「购买 编号 [数量]」，例如「购买 1 2」"
+
+        parts = args.split()
+        try:
+            index = int(parts[0])
+        except ValueError:
+            return "⚠️ 请输入有效的货品编号，例如「购买 1」"
+
+        quantity = 1
+        if len(parts) >= 2:
+            try:
+                quantity = int(parts[1])
+            except ValueError:
+                pass
+        quantity = max(1, quantity)
+
+        result = self.engine.buy_from_merchant(player, index, quantity)
+        if result["type"] == "error":
+            return f"⚠️ {result['message']}"
+        self._save_data()
+        return result["message"]
+
+    def _cmd_sell(self, user_id: str, group_id: str, args: str) -> str:
+        """向商人出售"""
+        player = self.engine.get_player(user_id, group_id)
+        if not player or not player.is_alive():
+            return "⚠️ 你还没有开始生存或已死亡！"
+
+        if not args:
+            return "⚠️ 请输入「出售 物品名 [数量]」，例如「出售 绷带 3」"
+
+        parts = args.split()
+        # 尝试解析: 出售 物品名 [数量]
+        quantity = 1
+        # 最后一个部分如果是数字则为数量
+        if parts[-1].isdigit():
+            quantity = int(parts[-1])
+            item_name = " ".join(parts[:-1])
+        else:
+            item_name = " ".join(parts)
+
+        quantity = max(1, quantity)
+
+        if not item_name:
+            return "⚠️ 请指定要出售的物品名称"
+
+        # 解析物品ID（遍历所有注册物品，精确+模糊匹配）
+        item_id = None
+        all_items = ItemRegistry.get_all()
+        # 精确匹配
+        for it in all_items:
+            if it.name == item_name:
+                item_id = it.id
+                break
+        # 模糊匹配
+        if not item_id:
+            for it in all_items:
+                if item_name in it.name or it.name in item_name:
+                    item_id = it.id
+                    break
+
+        if not item_id:
+            return f"⚠️ 未找到物品「{item_name}」。请使用完整的物品名称，如「绷带」「罐头食品」「木材」等。"
+
+        result = self.engine.sell_to_merchant(player, item_id, quantity)
+        if result["type"] == "error":
+            return f"⚠️ {result['message']}"
+        self._save_data()
+        return result["message"]
 
     async def _init_llm_events(self):
         """初始化 LLM 事件生成器：直接用 AstrBot 内置大模型尝试生成，成功则启用"""

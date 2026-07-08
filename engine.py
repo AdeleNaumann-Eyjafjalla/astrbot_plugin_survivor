@@ -11,7 +11,8 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from models import (
     PlayerState, GroupGameState, Item, Building, GameEvent, Skill,
-    ItemCategory, EventType, ResourceType, PlayerStatus
+    ItemCategory, EventType, ResourceType, PlayerStatus,
+    MerchantOffer, MerchantState
 )
 from content import (
     ItemRegistry, BuildingRegistry, EventRegistry,
@@ -55,6 +56,9 @@ class SurvivorEngine:
         # LLM 事件开关及比例（0.0 ~ 1.0，默认 30% 概率使用大模型生成的事件）
         self.llm_event_ratio: float = 0.3
         self.llm_enabled: bool = True
+
+        # 商人状态: {group_id: MerchantState}
+        self._merchants: Dict[str, MerchantState] = {}
 
     # ================================================================
     # 内部工具方法
@@ -804,7 +808,10 @@ class SurvivorEngine:
             self._auto_gather(player)
             player.days_survived += 1
 
-        # 6. 群组公告
+        # 7. 商人补货
+        self.check_and_refresh_merchant(group_id)
+
+        # 8. 群组公告
         if group.current_day % 5 == 0:
             announcements.append(f"📢 第 {group.current_day} 天，危险等级: {'⭐' * group.danger_level}")
 
@@ -1423,6 +1430,312 @@ class SurvivorEngine:
     def get_player_list(self, group_id: str) -> List[PlayerState]:
         """获取群内所有玩家"""
         return list(self._players.get(group_id, {}).values())
+
+    # ================================================================
+    # 末日商人系统
+    # ================================================================
+
+    # 商人可出售的物品池（物品ID列表，按稀有度分组）
+    _MERCHANT_ITEM_POOL = {
+        "common": ["canned_food", "bottled_water", "bandage", "cloth", "rope",
+                    "nails", "scrap_metal", "wood_plank", "matchbox", "herb",
+                    "leather", "glass", "plastic", "battery"],
+        "uncommon": ["first_aid_kit", "mre", "flashlight", "molotov",
+                      "firestarter", "trap_kit", "electronics", "gunpowder",
+                      "baseball_bat", "leather_jacket"],
+        "rare": ["crossbow", "hunting_rifle", "riot_shield", "night_gear",
+                  "stimpack", "antidote", "radio", "survivor_journal"],
+        "epic": ["military_vest", "fire_axe"],
+        "legendary": ["flame_sword"],
+    }
+
+    # 商人也可出售基础资源（少量）
+    _MERCHANT_RESOURCE_POOL = ["food", "water", "wood", "stone", "iron", "medicine", "ammo", "fuel"]
+
+    # 各稀有度物品的购买价格范围（资源总量，随机分配）
+    _PRICE_BUY_RANGE = {
+        "common": (4, 10),
+        "uncommon": (10, 22),
+        "rare": (22, 45),
+        "epic": (40, 70),
+        "legendary": (65, 120),
+    }
+
+    # 各稀有度物品的出售价格范围（玩家卖给商人）
+    _PRICE_SELL_RANGE = {
+        "common": (2, 5),
+        "uncommon": (5, 12),
+        "rare": (12, 25),
+        "epic": (22, 42),
+        "legendary": (38, 75),
+    }
+
+    def _ensure_merchant(self, group_id: str) -> MerchantState:
+        """确保商人状态存在"""
+        if group_id not in self._merchants:
+            self._merchants[group_id] = MerchantState(group_id=group_id)
+        return self._merchants[group_id]
+
+    def _pick_resource_currency(self, total_value: int) -> Dict[str, int]:
+        """将总价格随机分配到1-3种基础资源上"""
+        candidates = ["food", "water", "wood", "stone", "iron", "medicine", "ammo", "fuel"]
+        num_resources = random.randint(1, min(3, len(candidates)))
+        chosen = random.sample(candidates, num_resources)
+        # 随机分配总量
+        splits = [random.random() for _ in range(num_resources)]
+        total_splits = sum(splits)
+        result = {}
+        for i, res in enumerate(chosen):
+            val = max(1, int(total_value * splits[i] / total_splits))
+            result[res] = val
+        return result
+
+    def refresh_merchant_inventory(self, group_id: str, danger_level: int = 1) -> MerchantState:
+        """刷新商人库存"""
+        merchant = self._ensure_merchant(group_id)
+        merchant.last_refresh_day = self.ensure_group(group_id).current_day
+        merchant.inventory = []
+
+        used_ids = set()
+
+        # 常驻：食物和水永远出现
+        for perm_res in ["food", "water"]:
+            perm_name = ItemRegistry.get_name(perm_res)
+            perm_buy_total = random.randint(3, 10)
+            perm_buy_price = self._pick_resource_currency(perm_buy_total)
+            perm_sell_total = random.randint(2, 5)
+            perm_sell_price = self._pick_resource_currency(perm_sell_total)
+            # 卖价不要收到自己
+            perm_sell_price = {k: v for k, v in perm_sell_price.items() if k != perm_res}
+            if not perm_sell_price:
+                perm_sell_price = {"wood": perm_sell_total}
+            merchant.inventory.append(MerchantOffer(
+                item_id=perm_res,
+                name=perm_name,
+                is_resource=True,
+                stock=random.randint(5, 15),
+                buy_price=perm_buy_price,
+                sell_price=perm_sell_price,
+            ))
+            used_ids.add(perm_res)
+
+        # 确定随机出售数量（4-8个货品）
+        num_offers = random.randint(4, 8)
+
+        # 每件货品随机从各稀有度池中抽取（稀有度高概率低）
+        rarity_weights = {
+            "common": 0.45, "uncommon": 0.30, "rare": 0.15,
+            "epic": 0.07, "legendary": 0.03,
+        }
+        rarities = list(rarity_weights.keys())
+
+        for _ in range(num_offers):
+            # 按权重选稀有度
+            chosen_rarity = random.choices(rarities,
+                                          weights=[rarity_weights[r] for r in rarities])[0]
+            pool = self._MERCHANT_ITEM_POOL.get(chosen_rarity, [])
+            if not pool:
+                continue
+            item_id = random.choice(pool)
+            if item_id in used_ids:
+                continue
+            used_ids.add(item_id)
+
+            item_def = ItemRegistry.get(item_id)
+            item_name = item_def.name if item_def else item_id
+            is_resource = item_id in self._RESOURCE_IDS
+
+            # 购买价格（玩家向商人购买需要的资源）
+            buy_total = random.randint(*self._PRICE_BUY_RANGE[chosen_rarity])
+            buy_price = self._pick_resource_currency(buy_total)
+
+            # 出售价格（玩家卖给商人获得的资源）
+            sell_total = random.randint(*self._PRICE_SELL_RANGE[chosen_rarity])
+            sell_price = self._pick_resource_currency(sell_total)
+
+            stock = random.randint(1, 3)
+
+            offer = MerchantOffer(
+                item_id=item_id,
+                name=item_name,
+                is_resource=is_resource,
+                stock=stock,
+                buy_price=buy_price,
+                sell_price=sell_price,
+            )
+            merchant.inventory.append(offer)
+
+        # 额外加1-2个基础资源货品（少量资源用其他资源购买）
+        num_res_offers = random.randint(1, 2)
+        res_pool = [r for r in self._MERCHANT_RESOURCE_POOL if r not in used_ids]
+        random.shuffle(res_pool)
+        for res_id in res_pool[:num_res_offers]:
+            res_name = ItemRegistry.get_name(res_id)
+            buy_total = random.randint(3, 12)
+            buy_price = self._pick_resource_currency(buy_total)
+            sell_total = random.randint(2, 6)
+            sell_price = self._pick_resource_currency(sell_total)
+            # 确保卖价不会收到同一个资源
+            sell_price = {k: v for k, v in sell_price.items() if k != res_id}
+            if not sell_price:
+                sell_price = {"wood": sell_total}
+
+            offer = MerchantOffer(
+                item_id=res_id,
+                name=res_name,
+                is_resource=True,
+                stock=random.randint(3, 10),
+                buy_price=buy_price,
+                sell_price=sell_price,
+            )
+            merchant.inventory.append(offer)
+
+        return merchant
+
+    def check_and_refresh_merchant(self, group_id: str) -> MerchantState:
+        """检查是否需要刷新商人（每日自动刷新）"""
+        merchant = self._ensure_merchant(group_id)
+        group = self.ensure_group(group_id)
+        if group.current_day - merchant.last_refresh_day >= merchant.refresh_interval:
+            self.refresh_merchant_inventory(group_id, group.danger_level)
+        return merchant
+
+    def get_merchant_inventory(self, group_id: str) -> List[MerchantOffer]:
+        """获取商人当前库存（如未初始化则刷新）"""
+        merchant = self._ensure_merchant(group_id)
+        if not merchant.inventory:
+            self.refresh_merchant_inventory(group_id)
+        return merchant.inventory
+
+    def buy_from_merchant(self, player: PlayerState, offer_index: int,
+                          quantity: int = 1) -> Dict[str, Any]:
+        """玩家从商人购买物品"""
+        group_id = player.group_id
+        merchant = self._ensure_merchant(group_id)
+        if not merchant.inventory:
+            return {"type": "error", "message": "🚚 商人暂时没有货物，请等待补货。"}
+
+        if offer_index < 1 or offer_index > len(merchant.inventory):
+            return {"type": "error",
+                    "message": f"⚠️ 无效的货品编号 (1-{len(merchant.inventory)})。"}
+
+        offer = merchant.inventory[offer_index - 1]
+        if offer.stock <= 0:
+            return {"type": "error", "message": f"📦 {offer.name} 已售罄！"}
+
+        quantity = min(quantity, offer.stock)
+        quantity = max(1, quantity)
+
+        # 计算购买价格
+        total_cost = {k: v * quantity for k, v in offer.buy_price.items()}
+
+        # 商人职业：购买折扣 40%
+        trade_bonus = 1.0
+        if player.player_class == "merchant":
+            class_data = ClassRegistry.get("merchant")
+            if class_data and "trade_bonus" in class_data.get("bonuses", {}):
+                trade_bonus = 1.0 - class_data["bonuses"]["trade_bonus"]
+                total_cost = {k: max(1, int(v * trade_bonus)) for k, v in total_cost.items()}
+
+        # 检查资源是否足够
+        for res, amount in total_cost.items():
+            if player.get_resource(res) < amount:
+                res_name = ItemRegistry.get_name(res)
+                return {
+                    "type": "error",
+                    "message": f"⚠️ 资源不足！需要 {res_name} x{amount}，你只有 {player.get_resource(res)}。"
+                }
+
+        # 消耗资源
+        cost_display = []
+        for res, amount in total_cost.items():
+            player.consume_resource(res, amount)
+            res_name = ItemRegistry.get_name(res)
+            cost_display.append(f"{res_name} -{amount}")
+
+        # 发放物品
+        if offer.is_resource:
+            player.add_resource(offer.item_id, quantity)
+        else:
+            player.add_item(offer.item_id, quantity)
+
+        # 减少库存
+        offer.stock -= quantity
+
+        discount_note = "（商人折扣已应用）" if trade_bonus < 1.0 else ""
+        return {
+            "type": "success",
+            "message": f"🛒 购买了 {offer.name} x{quantity}！{discount_note}\n"
+                       f"💸 支付：{'，'.join(cost_display)}",
+            "item_name": offer.name,
+            "quantity": quantity,
+            "cost": total_cost,
+        }
+
+    def sell_to_merchant(self, player: PlayerState, item_id: str,
+                         quantity: int = 1) -> Dict[str, Any]:
+        """玩家向商人出售物品"""
+        # 解析物品ID
+        item_def = ItemRegistry.get(item_id)
+        if not item_def:
+            return {"type": "error", "message": f"⚠️ 未知物品「{item_id}」。商人只收购可识别的物品。"}
+
+        is_resource = item_id in self._RESOURCE_IDS
+
+        # 检查玩家是否有该物品
+        if is_resource:
+            current = player.get_resource(item_id)
+        else:
+            current = player.inventory.get(item_id, 0)
+
+        if current < quantity:
+            return {
+                "type": "error",
+                "message": f"⚠️ 数量不足！你只有 {current} 个 {item_def.name}，想出售 {quantity} 个。"
+            }
+
+        # 计算出售价格（基于物品稀有度）
+        rarity = item_def.rarity if hasattr(item_def, 'rarity') else "common"
+        if rarity not in self._PRICE_SELL_RANGE:
+            rarity = "common"
+
+        total_sell_price = {}
+        for _ in range(quantity):
+            sell_total = random.randint(*self._PRICE_SELL_RANGE[rarity])
+            single_price = self._pick_resource_currency(sell_total)
+            for k, v in single_price.items():
+                total_sell_price[k] = total_sell_price.get(k, 0) + v
+
+        # 商人职业：出售加成 40%
+        trade_bonus = 1.0
+        if player.player_class == "merchant":
+            class_data = ClassRegistry.get("merchant")
+            if class_data and "trade_bonus" in class_data.get("bonuses", {}):
+                trade_bonus = 1.0 + class_data["bonuses"]["trade_bonus"]
+                total_sell_price = {k: int(v * trade_bonus) for k, v in total_sell_price.items()}
+
+        # 扣除玩家物品
+        if is_resource:
+            player.consume_resource(item_id, quantity)
+        else:
+            player.remove_item(item_id, quantity)
+
+        # 给予资源
+        gain_display = []
+        for res, amount in total_sell_price.items():
+            player.add_resource(res, amount)
+            res_name = ItemRegistry.get_name(res)
+            gain_display.append(f"{res_name} +{amount}")
+
+        bonus_note = "（商人加成已应用）" if trade_bonus > 1.0 else ""
+        return {
+            "type": "success",
+            "message": f"💰 出售了 {item_def.name} x{quantity}！{bonus_note}\n"
+                       f"💵 获得：{'，'.join(gain_display)}",
+            "item_name": item_def.name,
+            "quantity": quantity,
+            "gained": total_sell_price,
+        }
 
     # ================================================================
     # 数据序列化
