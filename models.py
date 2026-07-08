@@ -282,6 +282,9 @@ class PlayerState:
     # === 全自动搜集 ===
     idle_mode: bool = True   # 始终开启，每游戏天自动入账
 
+    # === 避难所休息（挂机） ===
+    is_resting: bool = False  # 是否在避难所中休息
+
     def is_alive(self) -> bool:
         return self.status != "dead"
 
@@ -351,6 +354,20 @@ class PlayerState:
             self.status = "dead"
             self.stats["deaths"] += 1
 
+    def apply_rest_decay(self):
+        """避难所休息时的极低自然消耗"""
+        # 极低消耗：约为正常的 10-15%
+        decay_mult = 0.7 if self.player_class == "survivalist" else 1.0
+        self.hunger = max(0, self.hunger - int(2 * decay_mult))
+        self.thirst = max(0, self.thirst - int(3 * decay_mult))
+
+        # 休息时不会因饥饿/口渴受伤（避难所提供了基本保障）
+        # 理智值恢复更快
+        sanity_regen = 5
+        if self.player_class == "survivalist":
+            sanity_regen = int(sanity_regen * 1.2)
+        self.sanity = min(100, self.sanity + sanity_regen)
+
     def get_title_display(self) -> str:
         """获取称号显示"""
         if self.active_title:
@@ -401,6 +418,7 @@ class PlayerState:
             "days_survived": self.days_survived,
             "stats": self.stats,
             "idle_mode": self.idle_mode,
+            "is_resting": self.is_resting,
         }
 
     @classmethod

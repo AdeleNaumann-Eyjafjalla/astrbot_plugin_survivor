@@ -141,6 +141,10 @@ CMD_LLM_RATIO = "llm比例"
 CMD_LLM_STATUS_CN = "大模型状态"
 CMD_LLM_TOGGLE_CN = "大模型开关"
 CMD_LLM_RATIO_CN = "大模型比例"
+# 避难所休息
+CMD_REST = "休息"
+CMD_END_REST = "离开避难所"
+CMD_REST_ALIAS = "进避难所"
 
 
 class SurvivorPlugin(Star):
@@ -601,6 +605,28 @@ class SurvivorPlugin(Star):
         else:
             yield event.plain_result(self._cmd_llm_ratio(ratio_str))
 
+    @filter.command(CMD_REST, "进入避难所休息回血")
+    async def handle_rest(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_rest(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_REST_ALIAS, "进入避难所休息回血（别名）")
+    async def handle_rest_alias(self, event: AstrMessageEvent):
+        async for r in self.handle_rest(event):
+            yield r
+        return
+
+    @filter.command(CMD_END_REST, "离开避难所结束休息")
+    async def handle_end_rest(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        result = self._cmd_end_rest(user_id, group_id)
+        event.stop_event()
+        yield event.plain_result(result)
+
     # ================================================================
     # 指令处理
     # ================================================================
@@ -711,6 +737,10 @@ class SurvivorPlugin(Star):
         if not player:
             return "⚠️ 你还没有开始生存！请先使用「开始生存 [名字] [职业]」创建角色。"
 
+        rest_notice = ""
+        if self._auto_end_rest(player):
+            rest_notice = "🏃 你离开了避难所。\n"
+
         can_act, reason = self.engine.can_act(player)
         if not can_act:
             return reason
@@ -744,7 +774,7 @@ class SurvivorPlugin(Star):
             lines.append(f"")
             lines.append(f"💡 回复「选择 数字」做出决定。")
 
-        return "\n".join(lines)
+        return (rest_notice + "\n".join(lines)).strip()
 
     def _cmd_choice(self, user_id: str, group_id: str, choice_index: int) -> str:
         """处理事件选择"""
@@ -876,6 +906,12 @@ class SurvivorPlugin(Star):
             f"🧠 理智值: {player.sanity}/100",
             f"⚔️ 攻击: {player.attack} | 🛡️ 防御: {player.defense}",
         ])
+
+        # 避难所休息提示
+        if player.is_resting:
+            shelter_level = player.buildings.get("shelter", 0)
+            heal_per_day = shelter_level * 10
+            lines.append(f"😴 避难所休息中 | 每日回血 +{heal_per_day} | 消耗极低")
 
         # 建筑增益提示
         if player.building_defense_bonus > 0 or player.building_max_health_bonus > 0:
@@ -1049,6 +1085,10 @@ class SurvivorPlugin(Star):
         if not player or not player.is_alive():
             return "⚠️ 你还没有开始生存或已死亡！"
 
+        rest_notice = ""
+        if self._auto_end_rest(player):
+            rest_notice = "🏃 你离开了避难所。\n"
+
         # 模糊匹配建筑名
         building_id = None
         bld = None
@@ -1070,13 +1110,17 @@ class SurvivorPlugin(Star):
             return result["message"]
 
         self._save_data()
-        return self._format_build_result(result)
+        return rest_notice + self._format_build_result(result)
 
     def _cmd_upgrade(self, user_id: str, group_id: str, building_name: str) -> str:
         """升级建筑"""
         player = self.engine.get_player(user_id, group_id)
         if not player or not player.is_alive():
             return "⚠️ 你还没有开始生存或已死亡！"
+
+        rest_notice = ""
+        if self._auto_end_rest(player):
+            rest_notice = "🏃 你离开了避难所。\n"
 
         # 模糊匹配建筑名
         building_id = None
@@ -1103,7 +1147,7 @@ class SurvivorPlugin(Star):
             return result["message"]
 
         self._save_data()
-        return self._format_build_result(result)
+        return rest_notice + self._format_build_result(result)
 
     @staticmethod
     def _format_build_result(result: dict) -> str:
@@ -1122,6 +1166,33 @@ class SurvivorPlugin(Star):
             f"消耗: {'  '.join(cost_parts)}\n"
             f"💡 使用「状态」查看你的建筑情况。"
         )
+
+    def _cmd_rest(self, user_id: str, group_id: str) -> str:
+        """进入避难所休息"""
+        player = self.engine.get_player(user_id, group_id)
+        if not player or not player.is_alive():
+            return "⚠️ 你还没有开始生存或已死亡！"
+
+        result = self.engine.start_shelter_rest(player)
+        self._save_data()
+        return result["message"]
+
+    def _cmd_end_rest(self, user_id: str, group_id: str) -> str:
+        """离开避难所"""
+        player = self.engine.get_player(user_id, group_id)
+        if not player:
+            return "⚠️ 你还没有开始生存！"
+
+        result = self.engine.end_shelter_rest(player)
+        self._save_data()
+        return result["message"]
+
+    def _auto_end_rest(self, player) -> bool:
+        """自动终止休息（执行行动时调用），返回是否实际终止了休息"""
+        if player and player.is_resting:
+            player.is_resting = False
+            return True
+        return False
 
     @staticmethod
     def _item_name(item_id: str) -> str:
@@ -1214,6 +1285,10 @@ class SurvivorPlugin(Star):
         if not player or not player.is_alive():
             return "⚠️ 你还没有开始生存或已死亡！"
 
+        rest_notice = ""
+        if self._auto_end_rest(player):
+            rest_notice = "🏃 你离开了避难所。\n"
+
         # 模糊匹配物品名
         item_id = None
         for rid, recipe in RecipeRegistry.get_all().items():
@@ -1228,13 +1303,17 @@ class SurvivorPlugin(Star):
         result = self.engine.craft_item(player, item_id, count)
         if result.get("type") == "success":
             self._save_data()
-        return result["message"]
+        return rest_notice + result["message"]
 
     def _cmd_use_item(self, user_id: str, group_id: str, item_name: str) -> str:
         """使用/装备物品"""
         player = self.engine.get_player(user_id, group_id)
         if not player or not player.is_alive():
             return "⚠️ 你还没有开始生存或已死亡！"
+
+        rest_notice = ""
+        if self._auto_end_rest(player):
+            rest_notice = "🏃 你离开了避难所。\n"
 
         # 模糊匹配
         item_id = None
@@ -1248,7 +1327,7 @@ class SurvivorPlugin(Star):
             return f"⚠️ 背包中没有「{item_name}」。"
 
         result = self.engine.use_item(player, item_id)
-        return result["message"]
+        return rest_notice + result["message"]
 
     def _cmd_equip_item(self, user_id: str, group_id: str, item_name: str) -> str:
         """装备武器或防具（只允许武器和防具类别）"""
@@ -1455,7 +1534,7 @@ class SurvivorPlugin(Star):
     def _cmd_help(self) -> str:
         """帮助信息"""
         return (
-            f"🏚️ ===== 末日生存 v2.7 帮助 =====\n"
+            f"🏚️ ===== 末日生存 v2.8 帮助 =====\n"
             f"\n"
             f"🎮 基础操作：\n"
             f"  · 开始生存 [名字] [职业] - 创建角色\n"
@@ -1476,7 +1555,9 @@ class SurvivorPlugin(Star):
             f"  · 建造 [名称] - 首次建造建筑\n"
             f"  · 升级 [名称] - 升级已有建筑\n"
             f"  · 农场/水井/军械库 - 每日产出食物/水/弹药\n"
-            f"  · 避难所 - 提升防御和血量上限\n"
+            f"  · 避难所 - 提升防御和血量上限，支持进入休息（挂机回血）\n"
+            f"  · 休息 / 进避难所 - 进入避难所休息回血（消耗极低）\n"
+            f"  · 离开避难所 - 退出休息状态\n"
             f"  · 工坊 - 合成材料消耗减少10%/级\n"
             f"  · 仓库 - 每日自动采集收益+15%/级\n"
             f"  · 医疗站 - 每日自动回血\n"
@@ -1708,6 +1789,10 @@ class SurvivorPlugin(Star):
         attacker = self.engine.get_player(user_id, group_id)
         if not attacker or not attacker.is_alive():
             return "⚠️ 你还没有开始生存或已死亡！"
+
+        rest_notice = ""
+        if self._auto_end_rest(attacker):
+            rest_notice = "🏃 你离开了避难所。\n"
 
         # 查找目标玩家
         target = None

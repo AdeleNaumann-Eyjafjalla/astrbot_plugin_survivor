@@ -525,6 +525,49 @@ class SurvivorEngine:
         }
 
     # ================================================================
+    # 避难所休息（挂机）
+    # ================================================================
+
+    def start_shelter_rest(self, player: PlayerState) -> Dict[str, Any]:
+        """进入避难所休息"""
+        shelter_level = player.buildings.get("shelter", 0)
+        if shelter_level <= 0:
+            return {"type": "error", "message": "⚠️ 你还没有建造避难所！先使用「建造 避难所」建造一个。"}
+
+        if player.is_resting:
+            return {"type": "error", "message": "😴 你已经在避难所中休息了！"}
+
+        if not player.is_alive():
+            return {"type": "error", "message": "💀 死者无法休息..."}
+
+        player.is_resting = True
+        heal_per_day = shelter_level * 10
+        shelter_bld = BuildingRegistry.get("shelter")
+        shelter_name = shelter_bld.name if shelter_bld else "避难所"
+        return {
+            "type": "success",
+            "message": (
+                f"😴 你进入了 {shelter_name} Lv.{shelter_level} 中休息。\n"
+                f"💤 期间饱食度和口渴度消耗极低\n"
+                f"💚 每日自动恢复 {heal_per_day} 点生命值\n"
+                f"🧠 理智值自然恢复加快\n"
+                f"⏳ 自动搜集正常进行\n\n"
+                f"使用「离开避难所」退出休息。"
+            ),
+        }
+
+    def end_shelter_rest(self, player: PlayerState) -> Dict[str, Any]:
+        """离开避难所"""
+        if not player.is_resting:
+            return {"type": "error", "message": "⚠️ 你并没有在避难所中休息。"}
+
+        player.is_resting = False
+        return {
+            "type": "success",
+            "message": "🚶 你离开了避难所，重新回到废土世界。",
+        }
+
+    # ================================================================
     # 合成系统
     # ================================================================
 
@@ -781,8 +824,11 @@ class SurvivorEngine:
             if not player.is_alive():
                 continue
 
-            # 1. 自然消耗
-            player.apply_daily_decay()
+            # 1. 自然消耗（避难所休息中消耗极低）
+            if player.is_resting:
+                player.apply_rest_decay()
+            else:
+                player.apply_daily_decay()
 
             # 2. 建筑产出
             self._apply_building_production(player)
@@ -803,6 +849,13 @@ class SurvivorEngine:
             if hospital_level > 0 and player.health < player.max_health:
                 heal = hospital_level * 10
                 player.health = min(player.max_health, player.health + heal)
+
+            # 5b. 避难所休息自动回血
+            if player.is_resting and player.health < player.max_health:
+                shelter_level = player.buildings.get("shelter", 0)
+                if shelter_level > 0:
+                    shelter_heal = shelter_level * 10
+                    player.health = min(player.max_health, player.health + shelter_heal)
 
             # 6. 全自动搜集——直接入账
             self._auto_gather(player)
@@ -832,8 +885,9 @@ class SurvivorEngine:
                     cd = ClassRegistry.get(p.player_class)
                     if cd:
                         cls_name = f" {cd['name']}"
+                rest_tag = "😴" if p.is_resting else "✅"
                 alive_lines.append(
-                    f"  ✅ {name} Lv.{p.level}{cls_name}: "
+                    f"  {rest_tag} {name} Lv.{p.level}{cls_name}: "
                     f"❤️{p.health}/{p.max_health} 🍖{p.hunger} 💧{p.thirst}"
                 )
             else:
