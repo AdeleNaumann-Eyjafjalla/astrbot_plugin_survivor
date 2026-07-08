@@ -896,7 +896,7 @@ class SurvivorPlugin(Star):
             lines.append(f"   {building.description}")
 
             # 格式化建造消耗（区分资源和物品）
-            res_icons = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石头",
+            res_icons = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石料",
                         "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
             cost_parts = []
             for k, v in building.build_cost.items():
@@ -960,7 +960,7 @@ class SurvivorPlugin(Star):
         self._save_data()
 
         # 展示消耗
-        res_icons = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石头",
+        res_icons = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石料",
                     "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
         cost_parts = []
         for k, v in result["cost"].items():
