@@ -737,9 +737,8 @@ class SurvivorPlugin(Star):
         if not player:
             return "⚠️ 你还没有开始生存！请先使用「开始生存 [名字] [职业]」创建角色。"
 
-        rest_notice = ""
-        if self._auto_end_rest(player):
-            rest_notice = "🏃 你离开了避难所。\n"
+        if player.is_resting:
+            return "😴 你正在避难所中休息！无法外出探索。请先使用「离开避难所」再探索。"
 
         can_act, reason = self.engine.can_act(player)
         if not can_act:
@@ -774,7 +773,7 @@ class SurvivorPlugin(Star):
             lines.append(f"")
             lines.append(f"💡 回复「选择 数字」做出决定。")
 
-        return (rest_notice + "\n".join(lines)).strip()
+        return "\n".join(lines)
 
     def _cmd_choice(self, user_id: str, group_id: str, choice_index: int) -> str:
         """处理事件选择"""
