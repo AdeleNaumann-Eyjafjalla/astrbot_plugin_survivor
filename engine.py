@@ -550,6 +550,14 @@ class SurvivorEngine:
             if class_data and "craft_discount" in class_data.get("bonuses", {}):
                 craft_discount = class_data["bonuses"]["craft_discount"]
 
+        # 工坊建筑：合成折扣（与职业折扣叠加）
+        workshop_level = player.buildings.get("workshop", 0)
+        if workshop_level > 0:
+            ws_bld = BuildingRegistry.get("workshop")
+            if ws_bld:
+                ws_discount = workshop_level * ws_bld.effect_per_level.get("craft_discount", 0)
+                craft_discount = min(0.6, craft_discount + ws_discount)
+
         # 复制材料（应用折扣）
         materials = {
             k: max(1, int(v * (1 - craft_discount)))
@@ -775,7 +783,10 @@ class SurvivorEngine:
             # 2. 建筑产出
             self._apply_building_production(player)
 
-            # 3. 技能被动效果
+            # 3. 建筑被动增益（防御、血量等）
+            self._apply_building_buffs(player)
+
+            # 4. 技能被动效果
             surv_level = player.skills.get("survival", 0)
             if surv_level > 0:
                 hunger_save = int(15 * surv_level * 0.05)
@@ -783,13 +794,13 @@ class SurvivorEngine:
                 player.hunger = min(100, player.hunger + hunger_save)
                 player.thirst = min(100, player.thirst + thirst_save)
 
-            # 4. 医疗站自动治疗
+            # 5. 医疗站自动治疗
             hospital_level = player.buildings.get("hospital", 0)
             if hospital_level > 0 and player.health < player.max_health:
                 heal = hospital_level * 10
                 player.health = min(player.max_health, player.health + heal)
 
-            # 5. 全自动搜集——直接入账
+            # 6. 全自动搜集——直接入账
             self._auto_gather(player)
             player.days_survived += 1
 
@@ -1015,6 +1026,29 @@ class SurvivorEngine:
             ammo_gain = armory_level * 2
             player.add_resource("ammo", ammo_gain)
 
+    def _apply_building_buffs(self, player: PlayerState):
+        """应用建筑被动增益（防御、血量等），通过增量法避免覆盖装备加成"""
+        # 避难所：防御和血量
+        shelter_level = player.buildings.get("shelter", 0)
+        bld_def = BuildingRegistry.get("shelter")
+        if shelter_level > 0 and bld_def:
+            def_per_level = bld_def.effect_per_level.get("defense", 0)
+            hp_per_level = bld_def.effect_per_level.get("max_health", 0)
+            new_defense = int(shelter_level * def_per_level)
+            new_max_hp = int(shelter_level * hp_per_level)
+        else:
+            new_defense = 0
+            new_max_hp = 0
+
+        # 增量法：计算新旧差值，避免覆盖装备/升级带来的数值
+        def_delta = new_defense - player.building_defense_bonus
+        hp_delta = new_max_hp - player.building_max_health_bonus
+
+        player.defense += def_delta
+        player.max_health += hp_delta
+        player.building_defense_bonus = new_defense
+        player.building_max_health_bonus = new_max_hp
+
     # ================================================================
     # 全自动搜集（每游戏天直接入账）
     # ================================================================
@@ -1044,6 +1078,17 @@ class SurvivorEngine:
             if res in class_resources:
                 gain = int(gain * class_resources[res])
             player.add_resource(res, max(1, gain))
+
+        # 仓库建筑：额外采集加成
+        storage_level = player.buildings.get("storage", 0)
+        if storage_level > 0:
+            storage_bld = BuildingRegistry.get("storage")
+            if storage_bld:
+                gather_bonus = storage_level * storage_bld.effect_per_level.get("gather_multiplier", 0)
+                for res, amount in base.items():
+                    bonus_gain = int(amount * gather_bonus)
+                    if bonus_gain > 0:
+                        player.add_resource(res, bonus_gain)
 
         if random.random() < min(0.3 + player.level * 0.02, 0.7):
             bonus_items = ["scrap_metal", "nails", "rope", "electronics", "cloth", "herb", "wood_plank"]

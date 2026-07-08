@@ -237,6 +237,10 @@ class PlayerState:
     # 建筑
     buildings: Dict[str, int] = field(default_factory=dict)  # {building_id: level}
 
+    # 建筑增益（每日结算时更新）
+    building_defense_bonus: int = 0     # 避难所防御加成
+    building_max_health_bonus: int = 0  # 避难所血量加成
+
     # 技能
     skills: Dict[str, int] = field(default_factory=dict)     # {skill_id: level}
 

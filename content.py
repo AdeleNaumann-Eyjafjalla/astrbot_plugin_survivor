@@ -412,7 +412,7 @@ def init_default_buildings():
         description="制作和修理物品的场所。",
         level=0, max_level=5,
         build_cost={"wood": 15, "iron": 5, "stone": 5},
-        effect_per_level={"craft_speed": 0.2}
+        effect_per_level={"craft_discount": 0.1}
     ))
     BuildingRegistry.register(Building(
         id="watchtower", name="瞭望塔", building_type=BuildingType.WATCHTOWER,
@@ -423,10 +423,10 @@ def init_default_buildings():
     ))
     BuildingRegistry.register(Building(
         id="storage", name="仓库", building_type=BuildingType.STORAGE,
-        description="扩大资源存储上限。",
+        description="妥善保管物资，每日自动采集收益提高。",
         level=0, max_level=5,
         build_cost={"wood": 25, "stone": 10},
-        effect_per_level={"storage_bonus": 50}
+        effect_per_level={"gather_multiplier": 0.15}
     ))
     BuildingRegistry.register(Building(
         id="hospital", name="医疗站", building_type=BuildingType.HOSPITAL,

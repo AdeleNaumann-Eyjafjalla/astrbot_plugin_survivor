@@ -1,6 +1,6 @@
 name: astrbot_plugin_survivor
 display_name: 末日生存
-desc: 末日生存文字游戏插件 v2.6 - 基础资源可合成、配方按分类展示、材料支持资源池消耗
-version: v2.6.0
+desc: 末日生存文字游戏插件 v2.7 - 建筑被动增益全面生效、工坊合成折扣、仓库采集加成
+version: v2.7.0
 author: AdeleNaumann
 repo: https://github.com/AdeleNaumann-Eyjafjalla/astrbot_plugin_survivor

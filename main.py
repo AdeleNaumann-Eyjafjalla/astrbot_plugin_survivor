@@ -114,6 +114,7 @@ CMD_STATUS = "状态"
 CMD_INVENTORY = "背包"
 CMD_BUILD_LIST = "建造列表"
 CMD_BUILD = "建造"
+CMD_UPGRADE = "升级"
 CMD_RECIPE = "配方"
 CMD_CRAFT = "合成"
 CMD_USE = "使用"
@@ -125,6 +126,8 @@ CMD_ACHIEVEMENTS = "成就"
 CMD_TITLE_LIST = "称号列表"
 CMD_SET_TITLE = "佩戴称号"
 CMD_PVP = "偷袭"
+CMD_GIVE = "给予"
+CMD_GIVE_ALIAS = "赠送"
 CMD_LEADERBOARD = "排行榜"
 CMD_RESPAWN = "重生"
 CMD_HELP = "帮助"
@@ -148,7 +151,8 @@ class SurvivorPlugin(Star):
     - 选择 [1-4]                    选择事件选项
     - 状态 / 我的状态                查看当前状态
     - 背包 / 物品                    查看背包和资源
-    - 建造 [建筑名]                  建造/升级建筑
+    - 建造 [建筑名]                  首次建造建筑
+    - 升级 [建筑名]                  升级已有建筑
     - 合成 [物品名] [数量]           合成物品
     - 使用 [物品名]                  使用物品
     - 装备 [物品名]                  装备武器/防具
@@ -157,6 +161,7 @@ class SurvivorPlugin(Star):
     - 称号列表 / 佩戴称号 [称号]     管理称号
     - 职业列表                       查看可选职业
     - 偷袭 [@玩家/QQ号]              PvP 偷袭其他玩家
+    - 给予 [@玩家] [物品] [数量]      赠予其他玩家资源或道具
     - 排行榜                         查看群内排行
     - 重生                           死亡后重新开始
     - 天气                           查看当前天气
@@ -171,9 +176,9 @@ class SurvivorPlugin(Star):
 
         # 插件元数据（AstrBot Star 系统通过属性读取）
         self.name = "astrbot_plugin_survivor"
-        self.desc = "末日生存文字游戏 v2.6 - 基础资源可合成、配方按分类展示、材料支持资源池消耗"
+        self.desc = "末日生存文字游戏 v2.7 - 建筑被动增益全面生效、工坊合成折扣、仓库采集加成"
         self.author = "AdeleNaumann"
-        self.version = "v2.6.0"
+        self.version = "v2.7.0"
 
         # 线程安全锁（保护定时器线程与主线程的数据读写）
         self._data_lock = threading.RLock()
@@ -327,7 +332,7 @@ class SurvivorPlugin(Star):
         event.stop_event()
         yield event.plain_result(result)
 
-    @filter.command(CMD_BUILD, "建造或升级建筑")
+    @filter.command(CMD_BUILD, "建造新建筑")
     async def handle_build(self, event: AstrMessageEvent):
         user_id = str(event.get_sender_id())
         group_id = str(event.get_group_id())
@@ -336,6 +341,18 @@ class SurvivorPlugin(Star):
             result = "⚠️ 请输入「建造 [建筑名]」，例如「建造 避难所」"
         else:
             result = self._cmd_build(user_id, group_id, building_name)
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_UPGRADE, "升级已有建筑")
+    async def handle_upgrade(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        building_name = (event.message_str or "").replace("升级", "", 1).strip()
+        if not building_name:
+            result = "⚠️ 请输入「升级 [建筑名]」，例如「升级 避难所」"
+        else:
+            result = self._cmd_upgrade(user_id, group_id, building_name)
         event.stop_event()
         yield event.plain_result(result)
 
@@ -458,6 +475,40 @@ class SurvivorPlugin(Star):
                 result = self._cmd_pvp(user_id, group_id, target_info)
         event.stop_event()
         yield event.plain_result(result)
+
+    @filter.command(CMD_GIVE, "给予其他玩家资源或道具")
+    async def handle_give(self, event: AstrMessageEvent):
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id())
+        # 优先从 @mention 提取目标 QQ 号
+        at_qq = self._extract_at_target(event)
+        message_str = (event.message_str or "").strip()
+        # 去掉命令前缀
+        for cmd in [CMD_GIVE, CMD_GIVE_ALIAS]:
+            if message_str.startswith(cmd):
+                message_str = message_str[len(cmd):].strip()
+                break
+        if at_qq:
+            if at_qq == user_id:
+                result = "⚠️ 你不能给予自己！"
+                event.stop_event()
+                yield event.plain_result(result)
+                return
+            result = self._cmd_give(user_id, group_id, at_qq, message_str)
+        else:
+            if not message_str:
+                result = "⚠️ 请输入「给予 @玩家 物品名 数量」，例如「给予 @某人 木材 10」"
+            else:
+                result = self._cmd_give(user_id, group_id, None, message_str)
+        event.stop_event()
+        yield event.plain_result(result)
+
+    @filter.command(CMD_GIVE_ALIAS, "给予其他玩家资源或道具（别名）")
+    async def handle_give_alias(self, event: AstrMessageEvent):
+        # 委托给 handle_give
+        async for r in self.handle_give(event):
+            yield r
+        return
 
     @filter.command(CMD_LEADERBOARD, "查看群内生存排行")
     async def handle_leaderboard(self, event: AstrMessageEvent):
@@ -795,6 +846,15 @@ class SurvivorPlugin(Star):
             f"⚔️ 攻击: {player.attack} | 🛡️ 防御: {player.defense}",
         ])
 
+        # 建筑增益提示
+        if player.building_defense_bonus > 0 or player.building_max_health_bonus > 0:
+            buffs = []
+            if player.building_defense_bonus > 0:
+                buffs.append(f"🛡️+{player.building_defense_bonus}")
+            if player.building_max_health_bonus > 0:
+                buffs.append(f"❤️+{player.building_max_health_bonus}")
+            lines.append(f"🏠 避难所加成: {'  '.join(buffs)}")
+
         # 装备
         if player.equipped_weapon or player.equipped_armor:
             lines.append(f"")
@@ -814,6 +874,21 @@ class SurvivorPlugin(Star):
                 skill = SkillRegistry.get(skill_id)
                 skill_name = skill.name if skill else skill_id
                 lines.append(f"  {skill_name}: Lv.{level}")
+
+        # 设施
+        if player.buildings:
+            lines.append(f"")
+            lines.append(f"🏗️ 设施：")
+            bld_icons = {
+                "shelter": "🏠", "farm": "🌾", "well": "💧",
+                "workshop": "🔧", "watchtower": "🔭", "storage": "📦",
+                "hospital": "🏥", "armory": "🔫", "trap": "🪤",
+            }
+            for bld_id, level in player.buildings.items():
+                bld = BuildingRegistry.get(bld_id)
+                bld_name = bld.name if bld else bld_id
+                icon = bld_icons.get(bld_id, "📌")
+                lines.append(f"  {icon} {bld_name}: Lv.{level}/{bld.max_level if bld else '?'}")
 
         # 统计
         lines.append(f"")
@@ -912,7 +987,7 @@ class SurvivorPlugin(Star):
             lines.append(f"   每级效果: {effect_text}")
             lines.append("")
 
-        lines.append("💡 使用「建造 [建筑名]」来建造或升级")
+        lines.append("💡 使用「建造 [建筑名]」建造，使用「升级 [建筑名]」升级")
         return "\n".join(lines)
 
     @staticmethod
@@ -938,28 +1013,70 @@ class SurvivorPlugin(Star):
         return "，".join(parts) if parts else "无"
 
     def _cmd_build(self, user_id: str, group_id: str, building_name: str) -> str:
-        """建造建筑"""
+        """建造新建筑"""
         player = self.engine.get_player(user_id, group_id)
         if not player or not player.is_alive():
             return "⚠️ 你还没有开始生存或已死亡！"
 
         # 模糊匹配建筑名
         building_id = None
-        for bld in BuildingRegistry.get_all():
-            if bld.name == building_name or bld.id == building_name:
-                building_id = bld.id
+        bld = None
+        for b in BuildingRegistry.get_all():
+            if b.name == building_name or b.id == building_name:
+                building_id = b.id
+                bld = b
                 break
 
         if not building_id:
             return f"⚠️ 未找到建筑「{building_name}」。使用「建造列表」查看可建造建筑。"
+
+        # 如果已建造，引导用户使用升级
+        if player.buildings.get(building_id, 0) > 0:
+            return f"⚠️ 你已经有 {bld.name} 了！请使用「升级 {bld.name}」来升级。"
 
         result = self.engine.build_structure(player, building_id)
         if result["type"] == "error":
             return result["message"]
 
         self._save_data()
+        return self._format_build_result(result)
 
-        # 展示消耗
+    def _cmd_upgrade(self, user_id: str, group_id: str, building_name: str) -> str:
+        """升级建筑"""
+        player = self.engine.get_player(user_id, group_id)
+        if not player or not player.is_alive():
+            return "⚠️ 你还没有开始生存或已死亡！"
+
+        # 模糊匹配建筑名
+        building_id = None
+        bld = None
+        for b in BuildingRegistry.get_all():
+            if b.name == building_name or b.id == building_name:
+                building_id = b.id
+                bld = b
+                break
+
+        if not building_id:
+            return f"⚠️ 未找到建筑「{building_name}」。使用「建造列表」查看可建造建筑。"
+
+        # 如果没建造，引导用户先建造
+        current_level = player.buildings.get(building_id, 0)
+        if current_level == 0:
+            return f"⚠️ 你还没有 {bld.name}！请先使用「建造 {bld.name}」来建造。"
+
+        if current_level >= bld.max_level:
+            return f"🏗️ {bld.name} 已达到最高等级 Lv.{bld.max_level}！"
+
+        result = self.engine.build_structure(player, building_id)
+        if result["type"] == "error":
+            return result["message"]
+
+        self._save_data()
+        return self._format_build_result(result)
+
+    @staticmethod
+    def _format_build_result(result: dict) -> str:
+        """格式化建造/升级结果"""
         res_icons = {"food": "🍖食物", "water": "💧水", "wood": "🪵木材", "stone": "🪨石料",
                     "iron": "🔩铁", "medicine": "💊药品", "ammo": "🔫弹药", "fuel": "⛽燃料"}
         cost_parts = []
@@ -1307,7 +1424,7 @@ class SurvivorPlugin(Star):
     def _cmd_help(self) -> str:
         """帮助信息"""
         return (
-            f"🏚️ ===== 末日生存 v2.6 帮助 =====\n"
+            f"🏚️ ===== 末日生存 v2.7 帮助 =====\n"
             f"\n"
             f"🎮 基础操作：\n"
             f"  · 开始生存 [名字] [职业] - 创建角色\n"
@@ -1325,8 +1442,14 @@ class SurvivorPlugin(Star):
             f"\n"
             f"🏗️ 建造系统：\n"
             f"  · 建造列表 - 查看可建造建筑\n"
-            f"  · 建造 [名称] - 建造/升级建筑\n"
-            f"  · 建筑提供每日资源和被动加成\n"
+            f"  · 建造 [名称] - 首次建造建筑\n"
+            f"  · 升级 [名称] - 升级已有建筑\n"
+            f"  · 农场/水井/军械库 - 每日产出食物/水/弹药\n"
+            f"  · 避难所 - 提升防御和血量上限\n"
+            f"  · 工坊 - 合成材料消耗减少10%/级\n"
+            f"  · 仓库 - 每日自动采集收益+15%/级\n"
+            f"  · 医疗站 - 每日自动回血\n"
+            f"  · 陷阱 - 概率捕获随机食物\n"
             f"\n"
             f"🔨 合成系统：\n"
             f"  · 配方 - 查看合成配方\n"
@@ -1346,6 +1469,12 @@ class SurvivorPlugin(Star):
             f"  · 偷袭 [玩家名/QQ号] - 偷袭其他玩家（支持 @对方）\n"
             f"  · 胜利可抢夺对方资源和物品\n"
             f"  · 冷却10分钟，新手保护2小时\n"
+            f"\n"
+            f"🤝 玩家交易：\n"
+            f"  · 给予 [@玩家] [物品] [数量] - 赠予资源或道具\n"
+            f"  · 可给予资源：食物/水/木材/石料/铁/药品/弹药/燃料\n"
+            f"  · 可给予道具：使用完整道具名称，如「绷带」「罐头食品」等\n"
+            f"  · 例：「给予 @某人 木材 10」「赠送 @某人 绷带 3」\n"
             f"\n"
             f"🌤️ 天气系统：\n"
             f"  · 天气 - 查看当前天气\n"
@@ -1613,6 +1742,143 @@ class SurvivorPlugin(Star):
                 f"反被造成了 {result['damage_taken']} 点伤害！{ammo_line}"
                 f"{'💀 你已死亡！使用「重生」重新开始。' if result.get('attacker_died') else ''}"
             )
+
+    # ================================================================
+    # 资源/物品名称映射
+    # ================================================================
+    _RESOURCE_NAMES = {
+        "食物": "food", "food": "food", "🍖": "food",
+        "水": "water", "water": "water", "💧": "water",
+        "木材": "wood", "木头": "wood", "wood": "wood", "🪵": "wood",
+        "石料": "stone", "石头": "stone", "stone": "stone", "🪨": "stone",
+        "铁": "iron", "铁锭": "iron", "iron": "iron", "🔩": "iron",
+        "药品": "medicine", "药": "medicine", "medicine": "medicine", "💊": "medicine",
+        "弹药": "ammo", "子弹": "ammo", "ammo": "ammo", "🔫": "ammo",
+        "燃料": "fuel", "汽油": "fuel", "fuel": "fuel", "⛽": "fuel",
+    }
+
+    _RESOURCE_DISPLAY = {
+        "food": "🍖食物", "water": "💧水", "wood": "🪵木材",
+        "stone": "🪨石料", "iron": "🔩铁", "medicine": "💊药品",
+        "ammo": "🔫弹药", "fuel": "⛽燃料",
+    }
+
+    def _parse_give_target(self, group_id: str, at_qq: str = None, message_str: str = ""):
+        """从消息中解析给予目标（QQ号或名字）和剩余内容。返回 (target_id, item_name, amount)"""
+        if at_qq:
+            target_id = at_qq
+            rest = message_str
+        else:
+            # 未@：第一个词可能是名字或QQ号
+            parts = message_str.split(None, 1)
+            if not parts:
+                return None, "", 0
+            first = parts[0]
+            rest = parts[1] if len(parts) > 1 else ""
+            # 尝试纯数字 QQ 号
+            clean = first.replace("@", "").strip()
+            if clean.isdigit():
+                target_id = clean
+            else:
+                # 尝试昵称查找
+                found = None
+                for uid, p in self.engine._players.get(group_id, {}).items():
+                    if p.nickname and first in p.nickname:
+                        found = uid
+                        break
+                if found:
+                    target_id = found
+                else:
+                    return None, "", 0
+
+        # 解析物品名和数量
+        parts = rest.split()
+        if len(parts) < 2:
+            return target_id, " ".join(parts), 1  # 默认数量1
+        item_name = " ".join(parts[:-1])
+        try:
+            amount = int(parts[-1])
+        except ValueError:
+            item_name = " ".join(parts)
+            amount = 1
+        amount = max(1, abs(amount))
+        return target_id, item_name, amount
+
+    def _resolve_give_target(self, item_name: str):
+        """解析物品名，返回 (type, id) 其中 type 为 'resource' 或 'item'"""
+        # 先匹配资源名
+        res_id = self._RESOURCE_NAMES.get(item_name.lower())
+        if res_id:
+            return "resource", res_id
+
+        # 再匹配物品（精确+模糊）
+        all_items = ItemRegistry.get_all()
+        for item_def in all_items:
+            if item_def.name == item_name:
+                return "item", item_def.id
+        for item_def in all_items:
+            if item_name.lower() in item_def.name.lower() or item_def.name.lower() in item_name.lower():
+                return "item", item_def.id
+
+        return None, None
+
+    def _cmd_give(self, user_id: str, group_id: str, at_qq: str = None, message_str: str = "") -> str:
+        """给予其他玩家资源或道具"""
+        # 解析目标
+        target_id, item_name, amount = self._parse_give_target(group_id, at_qq, message_str)
+        if not target_id:
+            return f"⚠️ 未找到目标玩家。请使用「给予 @玩家 物品名 数量」，例如「给予 @某人 木材 10」"
+        if not item_name:
+            return "⚠️ 请指定要给予的物品，例如「给予 @某人 木材 10」"
+
+        # 不能给自己
+        if target_id == user_id:
+            return "⚠️ 你不能给予自己！"
+
+        # 获取双方玩家
+        sender = self.engine.get_player(user_id, group_id)
+        if not sender or not sender.is_alive():
+            return "⚠️ 你还没有开始生存或已死亡！"
+
+        target = self.engine.get_player(target_id, group_id)
+        if not target or not target.is_alive():
+            return f"⚠️ 目标玩家不存在或已死亡！"
+
+        # 解析物品
+        give_type, give_id = self._resolve_give_target(item_name)
+        if not give_type:
+            return f"⚠️ 未找到物品「{item_name}」。\n💡 可用资源：食物/水/木材/石料/铁/药品/弹药/燃料\n💡 道具请使用完整的道具名称。"
+
+        if give_type == "resource":
+            # 检查发送者资源是否足够
+            current = sender.resources.get(give_id, 0)
+            if current < amount:
+                return f"⚠️ 你的{self._RESOURCE_DISPLAY.get(give_id, give_id)}不足！当前只有 {current}，需要 {amount}。"
+            sender.consume_resource(give_id, amount)
+            target.add_resource(give_id, amount)
+            display = self._RESOURCE_DISPLAY.get(give_id, give_id)
+        else:
+            # 检查发送者物品是否足够
+            current = sender.inventory.get(give_id, 0)
+            if current < amount:
+                item_def = ItemRegistry.get(give_id)
+                item_display = item_def.name if item_def else give_id
+                return f"⚠️ 你的{item_display}不足！当前只有 {current} 个，需要 {amount} 个。"
+            sender.remove_item(give_id, amount)
+            target.add_item(give_id, amount)
+            item_def = ItemRegistry.get(give_id)
+            display = item_def.name if item_def else give_id
+
+        # 保存数据
+        self._save_data()
+
+        target_display = target.nickname or target_id
+        return (
+            f"🤝 ===== 物资赠予 =====\n\n"
+            f"你向 {target_display} 赠予了：\n"
+            f"  {display} x{amount}\n\n"
+            f"当前余量：{current - amount} → {max(0, current - amount)}"
+        )
 
     async def _init_llm_events(self):
         """初始化 LLM 事件生成器：直接用 AstrBot 内置大模型尝试生成，成功则启用"""
