@@ -1807,9 +1807,11 @@ class SurvivorPlugin(Star):
 
     def _parse_give_target(self, group_id: str, at_qq: str = None, message_str: str = ""):
         """从消息中解析给予目标（QQ号或名字）和剩余内容。返回 (target_id, item_name, amount)"""
+        import re
         if at_qq:
             target_id = at_qq
-            rest = message_str
+            # 去除消息中残留的 CQ at 代码，避免被当成物品名
+            rest = re.sub(r'\[CQ:at,qq=\d+\]', '', message_str).strip()
         else:
             # 未@：第一个词可能是名字或QQ号
             parts = message_str.split(None, 1)
