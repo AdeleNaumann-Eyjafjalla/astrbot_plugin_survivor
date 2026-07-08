@@ -80,7 +80,7 @@ except ImportError:
             return decorator
 
 from models import PlayerState, GroupGameState, ItemCategory, Item
-from engine import SurvivorEngine, ACTION_COOLDOWN
+from engine import SurvivorEngine, EXPLORE_HUNGER_COST, EXPLORE_THIRST_COST
 from content import (
     init_all_content, ItemRegistry, BuildingRegistry,
     EventRegistry, SkillRegistry, RecipeRegistry,
@@ -653,7 +653,7 @@ class SurvivorPlugin(Star):
             lines.append(f"")
             lines.append(result["auto_message"])
             lines.append(f"")
-            lines.append(f"⏳ 冷却 {ACTION_COOLDOWN} 秒后可再次探索。")
+            lines.append(f"🍖 饱食 -{EXPLORE_HUNGER_COST} | 💧 口渴 -{EXPLORE_THIRST_COST}（每次探索消耗）")
         else:
             lines.append(f"")
             lines.append(f"🤔 你的选择：")
@@ -736,7 +736,7 @@ class SurvivorPlugin(Star):
         lines.append(f"")
         lines.append(f"━━━━━━━━━━━━━━━")
         lines.append(f"❤️ 生命: {player.health}/{player.max_health} | 🍖 {player.hunger} | 💧 {player.thirst}")
-        lines.append(f"⏳ 冷却 {ACTION_COOLDOWN} 秒后可再次探索。")
+        lines.append(f"🍖 饱食 -{EXPLORE_HUNGER_COST} | 💧 口渴 -{EXPLORE_THIRST_COST}（每次探索消耗）")
 
         if player.status == "dead":
             lines.append(f"")
@@ -1364,7 +1364,7 @@ class SurvivorPlugin(Star):
             f"⏱️ 机制说明：\n"
             f"  · 全自动搜集：创建角色后每游戏天自动入账，无需任何操作\n"
             f"  · 探索是额外收益方式，可主动触发随机事件\n"
-            f"  · 每{ACTION_COOLDOWN}秒可执行一次「探索」主动行动\n"
+            f"  · 每次探索消耗 🍖饱食{EXPLORE_HUNGER_COST} 💧口渴{EXPLORE_THIRST_COST}，无冷却时间\n"
             f"  · 每1小时结算一个游戏天\n"
             f"  · 建筑每日自动产出资源\n"
             f"  · 天气随机变化，影响探索体验"
@@ -1654,6 +1654,8 @@ class SurvivorPlugin(Star):
         if current >= llm_events.MAX_CACHE_SIZE:
             return 0
 
+        print(f"[Survivor] 开始补充 LLM 事件缓存... (当前 {current}/{llm_events.MAX_CACHE_SIZE})")
+
         # 获取一个群组的状态作为背景
         groups = self.engine._groups
         if groups:
@@ -1686,6 +1688,8 @@ class SurvivorPlugin(Star):
                 logger.info(f"[Survivor] LLM 补充了 {total_added} 个事件，缓存总数: {llm_events.cache_size()}")
             except NameError:
                 print(f"[Survivor] LLM 补充了 {total_added} 个事件，缓存总数: {llm_events.cache_size()}")
+        else:
+            print(f"[Survivor] ⚠️ LLM 事件补充失败或无需补充 (缓存 {llm_events.cache_size()} 个)")
 
         return total_added
 

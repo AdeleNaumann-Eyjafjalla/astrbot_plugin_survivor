@@ -31,9 +31,12 @@ def pop_event() -> Optional[GameEvent]:
     """从缓存中随机取一个事件"""
     global _cached_events
     if not _cached_events:
+        print("[LLM] 事件缓存为空，本次使用内置事件")
         return None
     idx = random.randrange(len(_cached_events))
-    return _cached_events.pop(idx)
+    event = _cached_events.pop(idx)
+    print(f"[LLM] 使用缓存事件: {event.name} (剩余 {len(_cached_events)} 个)")
+    return event
 
 
 # ================================================================
@@ -138,6 +141,8 @@ async def generate_batch(context, season: str, weather: str,
     try:
         prompt = _build_user_prompt(season, weather, danger_level, day, BATCH_SIZE)
 
+        print(f"[LLM] 正在请求大模型生成 {BATCH_SIZE} 个事件... (当前缓存 {len(_cached_events)} 个)")
+
         # 直接让 AstrBot 自己决定用哪个 LLM，不需要手动检测 provider
         resp = await context.llm_generate(
             system_prompt=SYSTEM_PROMPT,
@@ -147,19 +152,24 @@ async def generate_batch(context, season: str, weather: str,
         # 兼容不同 LLM 后端的响应格式
         text = _extract_completion_text(resp)
         if not text:
-            print("[LLMEventGen] LLM 返回了空文本，响应对象: %s" % type(resp).__name__)
+            print("[LLM] ❌ LLM 返回了空文本，响应对象: %s" % type(resp).__name__)
             return 0
 
+        print(f"[LLM] 收到 LLM 响应，长度 {len(text)} 字符，开始解析...")
         events = _parse_events(text)
         _cached_events.extend(events)
 
         # 更新时间戳用于冷却（非 force 模式）
         _last_generate_time = time.time()
+        if events:
+            print(f"[LLM] ✅ 成功生成 {len(events)} 个事件 (缓存总计 {len(_cached_events)} 个)")
+        else:
+            print(f"[LLM] ⚠️ 解析结果为空 (响应长度 {len(text)})")
         return len(events)
 
     except Exception:
         import traceback
-        print(f"[LLMEventGen] 生成事件失败:")
+        print("[LLM] ❌ 生成事件失败:")
         traceback.print_exc()
         return 0
     finally:
@@ -219,15 +229,21 @@ def _parse_events(text: str) -> List[GameEvent]:
         return []
 
     events = []
+    skipped = 0
     for i, raw in enumerate(raw_list):
         try:
             event = _raw_to_event(raw, i)
             if event:
                 events.append(event)
+            else:
+                skipped += 1
+                print(f"[LLM] ⚠️ 事件 #{i} 解析无效，跳过")
         except Exception as e:
-            print(f"[LLMEventGen] 解析事件 #{i} 失败: {e}")
+            skipped += 1
+            print(f"[LLM] ❌ 解析事件 #{i} 失败: {e}")
             continue
 
+    print(f"[LLM] 解析完成: {len(events)} 个有效 / {len(raw_list)} 个原始 (跳过 {skipped} 个)")
     return events
 
 

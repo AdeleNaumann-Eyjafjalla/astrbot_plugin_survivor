@@ -21,7 +21,9 @@ import llm_events
 
 
 # 行动冷却时间（秒）
-ACTION_COOLDOWN = 30
+ACTION_COOLDOWN = 30  # 已废弃：探索不再有冷却，改为消耗饱食/口渴
+EXPLORE_HUNGER_COST = 5    # 每次探索消耗饱食度
+EXPLORE_THIRST_COST = 8    # 每次探索消耗口渴度
 # 每日结算间隔（秒），实际使用时建议设长一些，这里为了测试设短一点
 DAY_DURATION = 3600  # 1小时 = 1游戏天
 
@@ -174,14 +176,14 @@ class SurvivorEngine:
     # ================================================================
 
     def can_act(self, player: PlayerState) -> Tuple[bool, str]:
-        """检查玩家是否可以行动"""
+        """检查玩家是否可以行动（无冷却，但需足够饱食/口渴）"""
         if not player.is_alive():
             return False, "💀 你已经死亡，无法行动。请使用「重生」指令重新开始。"
 
-        elapsed = time.time() - player.last_action_time
-        if elapsed < ACTION_COOLDOWN:
-            remaining = int(ACTION_COOLDOWN - elapsed)
-            return False, f"⏳ 行动冷却中，请等待 {remaining} 秒后再试。"
+        if player.hunger <= 0:
+            return False, "🍖 饱食度过低，无法行动。请先进食补充体力。"
+        if player.thirst <= 0:
+            return False, "💧 口渴度过低，无法行动。请先饮水补充水分。"
 
         return True, ""
 
@@ -190,16 +192,20 @@ class SurvivorEngine:
         执行一次行动（探索）
 
         随机触发一个事件，返回事件信息和选项。
+        每次探索消耗饱食度 {EXPLORE_HUNGER_COST} 和口渴度 {EXPLORE_THIRST_COST}。
         """
+        # 消耗饱食度和口渴度
+        player.hunger = max(0, player.hunger - EXPLORE_HUNGER_COST)
+        player.thirst = max(0, player.thirst - EXPLORE_THIRST_COST)
+
         # 根据当前状态选择事件类型权重
         event = self._pick_event(player, group)
         if not event:
-            # 空事件也要消耗冷却
             player.last_action_time = time.time()
             player.total_actions += 1
             return {
                 "type": "empty",
-                "message": "🌫️ 你在荒野中搜索了一圈，什么也没有发现...\n⏳ 冷却 {} 秒后可再次探索。".format(ACTION_COOLDOWN)
+                "message": "🌫️ 你在荒野中搜索了一圈，什么也没有发现...\n🍖饱食 -{} | 💧口渴 -{}".format(EXPLORE_HUNGER_COST, EXPLORE_THIRST_COST)
             }
 
         # 存储待处理事件
@@ -865,7 +871,9 @@ class SurvivorEngine:
         if self.llm_enabled and random.random() < self.llm_event_ratio:
             llm_event = llm_events.pop_event()
             if llm_event:
+                print(f"[LLM] 抽中 LLM 事件: {llm_event.name} (类型: {llm_event.event_type.value})")
                 return llm_event
+            # 缓存为空时会走内置事件，pop_event 内部已打印日志
 
         if not candidates:
             return None
