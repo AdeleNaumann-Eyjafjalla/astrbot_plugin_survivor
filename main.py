@@ -130,7 +130,6 @@ CMD_GIVE = "给予"
 CMD_GIVE_ALIAS = "赠送"
 CMD_MERCHANT = "商人"
 CMD_BUY = "购买"
-CMD_SELL = "出售"
 CMD_LEADERBOARD = "排行榜"
 CMD_RESPAWN = "重生"
 CMD_HELP = "帮助"
@@ -167,7 +166,6 @@ class SurvivorPlugin(Star):
     - 给予 [@玩家] [物品] [数量]      赠予其他玩家资源或道具
     - 商人                           查看末日商人货品
     - 购买 [编号] [数量]              向商人购买物品（用资源换）
-    - 出售 [物品名] [数量]            向商人出售物品（换资源）
     - 排行榜                         查看群内排行
     - 重生                           死亡后重新开始
     - 天气                           查看当前天气
@@ -531,16 +529,6 @@ class SurvivorPlugin(Star):
         message_str = (event.message_str or "").strip()
         args = message_str[len(CMD_BUY):].strip()
         result = self._cmd_buy(user_id, group_id, args)
-        event.stop_event()
-        yield event.plain_result(result)
-
-    @filter.command(CMD_SELL, "向商人出售物品（换取资源）")
-    async def handle_sell(self, event: AstrMessageEvent):
-        user_id = str(event.get_sender_id())
-        group_id = str(event.get_group_id())
-        message_str = (event.message_str or "").strip()
-        args = message_str[len(CMD_SELL):].strip()
-        result = self._cmd_sell(user_id, group_id, args)
         event.stop_event()
         yield event.plain_result(result)
 
@@ -1513,10 +1501,9 @@ class SurvivorPlugin(Star):
             f"🏕️ 末日商人：\n"
             f"  · 商人 - 查看当前货品列表\n"
             f"  · 购买 [编号] [数量] - 用资源购买商人货品\n"
-            f"  · 出售 [物品名] [数量] - 把物品卖给商人换资源\n"
             f"  · 商人每日自动补货，货品随机\n"
-            f"  · 商人职业享有 40% 交易优惠\n"
-            f"  · 例：「购买 1 2」「出售 绷带 3」\n"
+            f"  · 商人职业享有 40% 折扣\n"
+            f"  · 例：「购买 1 2」\n"
             f"\n"
             f"🌤️ 天气系统：\n"
             f"  · 天气 - 查看当前天气\n"
@@ -1810,8 +1797,9 @@ class SurvivorPlugin(Star):
         import re
         if at_qq:
             target_id = at_qq
-            # 去除消息中残留的 CQ at 代码，避免被当成物品名
-            rest = re.sub(r'\[CQ:at,qq=\d+\]', '', message_str).strip()
+            # 去除消息中残留的 @mention（CQ 码 + 纯文本 @xxx 两种格式）
+            rest = re.sub(r'\[CQ:at,qq=\d+\]', '', message_str)
+            rest = re.sub(r'@\S+', '', rest).strip()
         else:
             # 未@：第一个词可能是名字或QQ号
             parts = message_str.split(None, 1)
@@ -1837,15 +1825,23 @@ class SurvivorPlugin(Star):
 
         # 解析物品名和数量
         parts = rest.split()
-        if len(parts) < 2:
-            return target_id, " ".join(parts), 1  # 默认数量1
-        item_name = " ".join(parts[:-1])
+        if not parts:
+            return target_id, "", 1
+        if len(parts) == 1:
+            return target_id, parts[0], 1
+
+        # 最后一个 token 如果不是纯数字，说明所有 token 都是物品名
         try:
             amount = int(parts[-1])
         except ValueError:
-            item_name = " ".join(parts)
-            amount = 1
+            return target_id, " ".join(parts), 1
+
+        # 过滤明显异常的大数字（QQ号、乱码等被误解析为数量）
+        if amount > 10000:
+            return target_id, " ".join(parts), 1
+
         amount = max(1, abs(amount))
+        item_name = " ".join(parts[:-1])
         return target_id, item_name, amount
 
     def _resolve_give_target(self, item_name: str):
@@ -1894,11 +1890,21 @@ class SurvivorPlugin(Star):
             return f"⚠️ 未找到物品「{item_name}」。\n💡 可用资源：食物/水/木材/石料/铁/药品/弹药/燃料\n💡 道具请使用完整的道具名称。"
 
         if give_type == "resource":
-            # 检查发送者资源是否足够
+            # 检查发送者资源是否足够（也检查 inventory，兜底资源可能误存在背包）
             current = sender.resources.get(give_id, 0)
-            if current < amount:
-                return f"⚠️ 你的{self._RESOURCE_DISPLAY.get(give_id, give_id)}不足！当前只有 {current}，需要 {amount}。"
-            sender.consume_resource(give_id, amount)
+            inv_current = sender.inventory.get(give_id, 0)
+            total_current = current + inv_current
+            if total_current < amount:
+                display_name = self._RESOURCE_DISPLAY.get(give_id, give_id)
+                detail = f"当前只有 {current}" + (f"（背包另有 {inv_current}）" if inv_current > 0 else "")
+                return f"⚠️ 你的{display_name}不足！{detail}，需要 {amount}。"
+            # 优先消耗 resources，不够再从 inventory 补
+            from_res = min(current, amount)
+            remaining = amount - from_res
+            if from_res > 0:
+                sender.consume_resource(give_id, from_res)
+            if remaining > 0:
+                sender.remove_item(give_id, remaining)
             target.add_resource(give_id, amount)
             display = self._RESOURCE_DISPLAY.get(give_id, give_id)
         else:
@@ -1950,20 +1956,12 @@ class SurvivorPlugin(Star):
         for i, offer in enumerate(offers):
             stock_tag = "📦" if offer.stock > 0 else "❌售罄"
             item_icon = "🪙" if offer.is_resource else "📦"
-            # 购买价显示
-            buy_str = "、".join(
-                f"{ItemRegistry.get_name(k)}{v}" for k, v in offer.buy_price.items()
-            )
-            # 出售价显示
-            sell_str = "、".join(
-                f"{ItemRegistry.get_name(k)}{v}" for k, v in offer.sell_price.items()
-            )
+            price_res_name = ItemRegistry.get_name(offer.price_res)
 
             if offer.stock > 0:
                 lines.append(
                     f"  {i + 1}. {item_icon} {offer.name} x{offer.stock} {stock_tag}\n"
-                    f"     🛒 购买需：{buy_str}\n"
-                    f"     💰 出售得：{sell_str}\n"
+                    f"     价格：{price_res_name} x{offer.price_amt}\n"
                 )
             else:
                 lines.append(
@@ -1971,8 +1969,8 @@ class SurvivorPlugin(Star):
                 )
 
         lines.append(f"\n━━━━━━━━━━━━━━━━━━")
-        lines.append(f"💡 使用「购买 编号 [数量]」购买 |「出售 物品名 [数量]」出售")
-        lines.append(f"💡 商人职业享有 40% 交易优惠")
+        lines.append(f"💡 使用「购买 编号 [数量]」购买货品")
+        lines.append(f"💡 商人职业享有 40% 折扣")
 
         return "\n".join(lines)
 
@@ -2000,54 +1998,6 @@ class SurvivorPlugin(Star):
         quantity = max(1, quantity)
 
         result = self.engine.buy_from_merchant(player, index, quantity)
-        if result["type"] == "error":
-            return f"⚠️ {result['message']}"
-        self._save_data()
-        return result["message"]
-
-    def _cmd_sell(self, user_id: str, group_id: str, args: str) -> str:
-        """向商人出售"""
-        player = self.engine.get_player(user_id, group_id)
-        if not player or not player.is_alive():
-            return "⚠️ 你还没有开始生存或已死亡！"
-
-        if not args:
-            return "⚠️ 请输入「出售 物品名 [数量]」，例如「出售 绷带 3」"
-
-        parts = args.split()
-        # 尝试解析: 出售 物品名 [数量]
-        quantity = 1
-        # 最后一个部分如果是数字则为数量
-        if parts[-1].isdigit():
-            quantity = int(parts[-1])
-            item_name = " ".join(parts[:-1])
-        else:
-            item_name = " ".join(parts)
-
-        quantity = max(1, quantity)
-
-        if not item_name:
-            return "⚠️ 请指定要出售的物品名称"
-
-        # 解析物品ID（遍历所有注册物品，精确+模糊匹配）
-        item_id = None
-        all_items = ItemRegistry.get_all()
-        # 精确匹配
-        for it in all_items:
-            if it.name == item_name:
-                item_id = it.id
-                break
-        # 模糊匹配
-        if not item_id:
-            for it in all_items:
-                if item_name in it.name or it.name in item_name:
-                    item_id = it.id
-                    break
-
-        if not item_id:
-            return f"⚠️ 未找到物品「{item_name}」。请使用完整的物品名称，如「绷带」「罐头食品」「木材」等。"
-
-        result = self.engine.sell_to_merchant(player, item_id, quantity)
         if result["type"] == "error":
             return f"⚠️ {result['message']}"
         self._save_data()

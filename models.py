@@ -422,8 +422,8 @@ class MerchantOffer:
     name: str                   # 显示名称
     is_resource: bool = False   # 是否为资源类
     stock: int = 1              # 库存数量
-    buy_price: Dict[str, int] = field(default_factory=dict)   # 购买所需资源
-    sell_price: Dict[str, int] = field(default_factory=dict)   # 出售获得资源
+    price_res: str = ""         # 购买所需资源类型
+    price_amt: int = 0          # 购买所需资源数量
 
 
 @dataclass
